@@ -8,3 +8,7 @@ __pycache__
 .env
 *.log
 propelsync_postgres_data
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/*.tsbuildinfo

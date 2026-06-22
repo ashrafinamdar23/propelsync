@@ -11,7 +11,7 @@ Propelsync uses two application images:
 
 ```text
 ghcr.io/<owner>/propelsync-api:<version>
-ghcr.io/<owner>/propelsync-web:<version>
+ghcr.io/<owner>/propelsync-gateway:<version>
 ```
 
 The worker uses the same image as the API:
@@ -20,10 +20,17 @@ The worker uses the same image as the API:
 worker image = ghcr.io/<owner>/propelsync-api:<version>
 ```
 
+The gateway image contains:
+
+```text
+Nginx
+Production Nginx config
+React frontend static files under /propelsync/
+```
+
 Infrastructure images are pulled directly:
 
 ```text
-nginx:1.27-alpine
 postgres:16-alpine
 redis:7-alpine
 quay.io/keycloak/keycloak:26.6.3
@@ -51,7 +58,7 @@ Image names:
 
 ```bash
 export API_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-api:$VERSION
-export WEB_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-web:$VERSION
+export GATEWAY_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-gateway:$VERSION
 ```
 
 ## 2. Login To GHCR
@@ -74,22 +81,22 @@ Build API image:
 docker build -t "$API_IMAGE" .
 ```
 
-Build web image:
+Build gateway image:
 
 ```bash
 docker build \
-  -f frontend/Dockerfile.prod \
+  -f infrastructure/nginx/Dockerfile.prod \
   --build-arg VITE_BASE_PATH=/propelsync/ \
   --build-arg VITE_API_BASE_URL=/propelsync/api/v1 \
   --build-arg VITE_KEYCLOAK_URL=https://$VM_HOST \
   --build-arg VITE_KEYCLOAK_REALM=propelsync \
   --build-arg VITE_KEYCLOAK_CLIENT_ID=propelsync-web \
-  -t "$WEB_IMAGE" \
-  ./frontend
+  -t "$GATEWAY_IMAGE" \
+  .
 ```
 
-Important: Vite values are baked into the web image at build time. Build the web image for the
-target VM hostname or domain.
+Important: Vite values are baked into the gateway image at build time. Build the gateway image for
+the target VM hostname or domain.
 
 ## 4. Test Images Locally
 
@@ -97,14 +104,18 @@ Optional quick checks:
 
 ```bash
 docker run --rm "$API_IMAGE" python -m compileall app
-docker run --rm "$WEB_IMAGE" nginx -t
+docker run --rm \
+  --add-host api:127.0.0.1 \
+  --add-host keycloak:127.0.0.1 \
+  -v "$PWD/infrastructure/nginx/certs:/etc/nginx/certs:ro" \
+  "$GATEWAY_IMAGE" nginx -t
 ```
 
 ## 5. Push Images
 
 ```bash
 docker push "$API_IMAGE"
-docker push "$WEB_IMAGE"
+docker push "$GATEWAY_IMAGE"
 ```
 
 In GitHub, confirm the packages exist under:
@@ -124,7 +135,6 @@ The VM does not need source code. Copy only the deployment files:
 tar -czf propelsync-deploy-$VERSION.tar.gz \
   docker-compose.prod.yml \
   .env.example \
-  infrastructure/nginx/nginx.prod.conf \
   infrastructure/postgres/init
 ```
 
@@ -156,7 +166,7 @@ Pull:
 
 ```bash
 docker pull "ghcr.io/<owner>/propelsync-api:<version>"
-docker pull "ghcr.io/<owner>/propelsync-web:<version>"
+docker pull "ghcr.io/<owner>/propelsync-gateway:<version>"
 ```
 
 ## 8. Configure VM Env
@@ -165,7 +175,7 @@ In VM `.env`:
 
 ```text
 PROPELSYNC_API_IMAGE=ghcr.io/<owner>/propelsync-api:<version>
-PROPELSYNC_WEB_IMAGE=ghcr.io/<owner>/propelsync-web:<version>
+PROPELSYNC_GATEWAY_IMAGE=ghcr.io/<owner>/propelsync-gateway:<version>
 PUBLIC_APP_HTTPS_ORIGIN=https://<vm-host>
 PUBLIC_KEYCLOAK_ORIGIN=https://<vm-host>
 KEYCLOAK_EXTRA_ISSUERS=https://<vm-host>/realms/propelsync
@@ -187,28 +197,28 @@ For each release:
 ```bash
 export VERSION=0.1.1
 export API_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-api:$VERSION
-export WEB_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-web:$VERSION
+export GATEWAY_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-gateway:$VERSION
 
 docker build -t "$API_IMAGE" .
 docker build \
-  -f frontend/Dockerfile.prod \
+  -f infrastructure/nginx/Dockerfile.prod \
   --build-arg VITE_BASE_PATH=/propelsync/ \
   --build-arg VITE_API_BASE_URL=/propelsync/api/v1 \
   --build-arg VITE_KEYCLOAK_URL=https://$VM_HOST \
   --build-arg VITE_KEYCLOAK_REALM=propelsync \
   --build-arg VITE_KEYCLOAK_CLIENT_ID=propelsync-web \
-  -t "$WEB_IMAGE" \
-  ./frontend
+  -t "$GATEWAY_IMAGE" \
+  .
 
 docker push "$API_IMAGE"
-docker push "$WEB_IMAGE"
+docker push "$GATEWAY_IMAGE"
 ```
 
 Update VM `.env` image tags:
 
 ```text
 PROPELSYNC_API_IMAGE=ghcr.io/<owner>/propelsync-api:0.1.1
-PROPELSYNC_WEB_IMAGE=ghcr.io/<owner>/propelsync-web:0.1.1
+PROPELSYNC_GATEWAY_IMAGE=ghcr.io/<owner>/propelsync-gateway:0.1.1
 ```
 
 Apply:
@@ -228,13 +238,13 @@ On build machine:
 
 ```bash
 docker save "$API_IMAGE" -o propelsync-api-$VERSION.tar
-docker save "$WEB_IMAGE" -o propelsync-web-$VERSION.tar
+docker save "$GATEWAY_IMAGE" -o propelsync-gateway-$VERSION.tar
 ```
 
 Copy to VM:
 
 ```bash
-scp propelsync-api-$VERSION.tar propelsync-web-$VERSION.tar user@<vm-host>:/opt/propelsync/
+scp propelsync-api-$VERSION.tar propelsync-gateway-$VERSION.tar user@<vm-host>:/opt/propelsync/
 ```
 
 On VM:
@@ -242,7 +252,7 @@ On VM:
 ```bash
 cd /opt/propelsync
 docker load -i propelsync-api-$VERSION.tar
-docker load -i propelsync-web-$VERSION.tar
+docker load -i propelsync-gateway-$VERSION.tar
 docker compose -f docker-compose.prod.yml up -d
 ```
 

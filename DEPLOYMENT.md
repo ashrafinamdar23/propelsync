@@ -56,7 +56,6 @@ The VM does not need application source code. It needs only deployment files:
 docker-compose.prod.yml
 .env.example
 .env
-infrastructure/nginx/nginx.prod.conf
 infrastructure/nginx/certs/
 infrastructure/postgres/init/
 ```
@@ -67,7 +66,7 @@ The application itself is pulled as images:
 
 ```text
 PROPELSYNC_API_IMAGE
-PROPELSYNC_WEB_IMAGE
+PROPELSYNC_GATEWAY_IMAGE
 ```
 
 See [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md) for GHCR build and push steps.
@@ -86,7 +85,7 @@ Required VM values:
 
 ```text
 PROPELSYNC_API_IMAGE=ghcr.io/<owner>/propelsync-api:<version>
-PROPELSYNC_WEB_IMAGE=ghcr.io/<owner>/propelsync-web:<version>
+PROPELSYNC_GATEWAY_IMAGE=ghcr.io/<owner>/propelsync-gateway:<version>
 
 POSTGRES_DB=propelsync_prod
 POSTGRES_USER=propelsync
@@ -186,7 +185,6 @@ Expected core services:
 ```text
 propelsync-nginx
 propelsync-api
-propelsync-web
 propelsync-worker
 propelsync-postgres
 propelsync-keycloak
@@ -268,12 +266,11 @@ later.
 
 ### Nginx
 
-Routes public traffic.
+Routes public traffic and serves the React frontend static files.
 
 Important files:
 
 ```text
-infrastructure/nginx/nginx.prod.conf
 infrastructure/nginx/certs/propelsync-selfsigned.crt
 infrastructure/nginx/certs/propelsync-selfsigned.key
 ```
@@ -302,9 +299,9 @@ docker compose -f docker-compose.prod.yml exec api alembic upgrade head
 docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
 ```
 
-### Web
+### Frontend
 
-Runs the React/Vite frontend. It is served under:
+The React/Vite frontend is built into the gateway image and served under:
 
 ```text
 /propelsync/
@@ -444,7 +441,7 @@ Check upstream services:
 ```bash
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs --tail 100 api
-docker compose -f docker-compose.prod.yml logs --tail 100 web
+docker compose -f docker-compose.prod.yml logs --tail 100 nginx
 docker compose -f docker-compose.prod.yml logs --tail 100 keycloak
 ```
 
@@ -468,7 +465,7 @@ Before using with real society data:
 
 ```text
 Use strong unique passwords in .env
-Restrict direct ports 8000, 5173, 5432, 6379, 9000 from public internet
+Restrict direct ports 8000, 5432, 6379, 9000 from public internet
 Prefer a trusted TLS certificate
 Schedule PostgreSQL and Keycloak database backups
 Move secrets to a proper secret manager when available
