@@ -349,6 +349,13 @@ export type Invoice = {
   updated_at: string;
 };
 
+export type InvoiceListFilters = {
+  flat_id?: string;
+  status?: string;
+  invoice_date_from?: string;
+  invoice_date_to?: string;
+};
+
 export type InvoiceLineItem = {
   id: string;
   tenant_id: string;
@@ -503,6 +510,7 @@ export type LateFeePreviewRow = {
   flat_id: string;
   flat_number: string;
   due_date: string;
+  applied_as_of_date: string;
   days_overdue: number;
   amount_due: string;
   late_fee_rule_id: string;
@@ -1790,9 +1798,21 @@ export function activateBillingRule(
 export function listInvoices(
   token: string,
   tenantId: string,
-  societyId: string
+  societyId: string,
+  filters: InvoiceListFilters = {}
 ): Promise<Invoice[]> {
-  return tenantApiRequest<Invoice[]>(`/societies/${societyId}/invoices`, token, tenantId);
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) {
+      params.set(key, value);
+    }
+  });
+  const query = params.toString();
+  return tenantApiRequest<Invoice[]>(
+    `/societies/${societyId}/invoices${query ? `?${query}` : ""}`,
+    token,
+    tenantId
+  );
 }
 
 export function listPayments(

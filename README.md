@@ -69,6 +69,7 @@ origin so Keycloak accepts the `/propelsync/` redirect URL.
 
 See component operation notes:
 
+- [CI/CD](CICD.md)
 - [Build And Release Images](BUILD_AND_RELEASE.md)
 - [VM Deployment](DEPLOYMENT.md)
 - [API](app/README.md)

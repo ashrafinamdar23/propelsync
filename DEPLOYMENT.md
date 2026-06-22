@@ -208,6 +208,14 @@ Run once after services are up and after every change to public URL values:
 docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
 ```
 
+If this fails with `Connection refused` for Keycloak, Keycloak is still starting. Wait 30-60 seconds
+and rerun the same command:
+
+```bash
+docker compose -f docker-compose.prod.yml logs --tail 100 keycloak
+docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
+```
+
 This creates or updates:
 
 ```text
@@ -417,6 +425,16 @@ PUBLIC_KEYCLOAK_ORIGIN=https://<vm-host>
 Then run:
 
 ```bash
+docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
+```
+
+### Bootstrap Says Keycloak Connection Refused
+
+Keycloak can take longer to become ready than the container takes to start. Check logs, wait until the
+server reports it has started, then rerun bootstrap:
+
+```bash
+docker compose -f docker-compose.prod.yml logs --tail 100 keycloak
 docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
 ```
 

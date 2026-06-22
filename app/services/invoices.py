@@ -205,16 +205,27 @@ def list_invoices(
     *,
     tenant_context: TenantContext,
     society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    status: str | None = None,
+    invoice_date_from: date | None = None,
+    invoice_date_to: date | None = None,
 ) -> list[Invoice]:
     ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    statement = select(Invoice).where(
+        Invoice.tenant_id == tenant_context.tenant_id,
+        Invoice.society_id == society_id,
+    )
+    if flat_id is not None:
+        statement = statement.where(Invoice.flat_id == flat_id)
+    if status:
+        statement = statement.where(Invoice.status == status)
+    if invoice_date_from is not None:
+        statement = statement.where(Invoice.invoice_date >= invoice_date_from)
+    if invoice_date_to is not None:
+        statement = statement.where(Invoice.invoice_date <= invoice_date_to)
     return list(
         session.scalars(
-            select(Invoice)
-            .where(
-                Invoice.tenant_id == tenant_context.tenant_id,
-                Invoice.society_id == society_id,
-            )
-            .order_by(Invoice.invoice_date.desc(), Invoice.invoice_number.desc())
+            statement.order_by(Invoice.invoice_date.desc(), Invoice.invoice_number.desc())
         )
     )
 

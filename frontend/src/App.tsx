@@ -181,6 +181,7 @@ import {
   type InvoiceDetail,
   type InvoiceGenerationPayload,
   type InvoiceGenerationPreviewResponse,
+  type InvoiceListFilters,
   type IncomeExpenseReport,
   type JournalEntry,
   type JournalEntryDetail,
@@ -480,6 +481,14 @@ const manualInvoiceFormDefaults = {
   notes: ""
 };
 
+const invoiceFilterDefaults = {
+  month: "",
+  invoice_date_from: "",
+  invoice_date_to: "",
+  flat_id: "",
+  status: ""
+};
+
 const paymentFormDefaults = {
   building_id: "",
   flat_id: "",
@@ -599,6 +608,7 @@ const billingScopeTypes = ["all_flats", "building", "wing", "flat_type"];
 const billingAreaBases = ["carpet_area", "built_up_area"];
 const billingPeriodTimings = ["current_period", "next_period"];
 const lateFeeCalculationMethods = ["fixed", "percent_of_due"];
+const invoiceStatuses = ["issued", "partially_paid", "paid", "overdue", "cancelled"];
 const documentResetPolicies = ["never", "monthly", "financial_year"];
 const operationalReportTypes = [
   { value: "billing", label: "Billing Report", mode: "period" },
@@ -668,6 +678,16 @@ function nullableNumber(value: string): number | null {
 
 function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function monthDateRange(monthValue: string): { from: string; to: string } {
+  const [year, month] = monthValue.split("-").map(Number);
+  if (!year || !month) {
+    return { from: "", to: "" };
+  }
+  const from = new Date(Date.UTC(year, month - 1, 1));
+  const to = new Date(Date.UTC(year, month, 0));
+  return { from: toIsoDate(from), to: toIsoDate(to) };
 }
 
 function currentMonthInvoiceGenerationDefaults(): InvoiceGenerationPayload {
@@ -903,6 +923,7 @@ function App() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
+  const [invoiceFilters, setInvoiceFilters] = useState(invoiceFilterDefaults);
   const [invoiceGenerationForm, setInvoiceGenerationForm] = useState<InvoiceGenerationPayload>(
     currentMonthInvoiceGenerationDefaults
   );
@@ -1843,7 +1864,8 @@ function App() {
   const refreshInvoices = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
-    authToken = token
+    authToken = token,
+    filters = invoiceFilters
   ) => {
     if (!tenantId || !societyId) {
       setInvoices([]);
@@ -1856,20 +1878,26 @@ function App() {
     setIsLoadingInvoices(true);
     setError("");
     try {
-      const rows = await listInvoices(authToken, tenantId, societyId);
+      const requestFilters: InvoiceListFilters = {
+        flat_id: filters.flat_id || undefined,
+        status: filters.status || undefined,
+        invoice_date_from: filters.invoice_date_from || undefined,
+        invoice_date_to: filters.invoice_date_to || undefined
+      };
+      const rows = await listInvoices(authToken, tenantId, societyId, requestFilters);
       setInvoices(rows);
       setSelectedInvoiceId((current) => {
         if (current && rows.some((invoice) => invoice.id === current)) {
           return current;
         }
-        return rows[0]?.id ?? "";
+        return "";
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load invoices.");
     } finally {
       setIsLoadingInvoices(false);
     }
-  }, [selectedSocietyId, selectedTenantId, token]);
+  }, [invoiceFilters, selectedSocietyId, selectedTenantId, token]);
 
   const refreshPayments = useCallback(async (
     tenantId = selectedTenantId,
@@ -10907,6 +10935,7 @@ function App() {
                           <th>Invoice</th>
                           <th>Flat</th>
                           <th>Due Date</th>
+                          <th>Apply Date</th>
                           <th>Overdue</th>
                           <th>Amount Due</th>
                           <th>Rule</th>
@@ -10916,10 +10945,11 @@ function App() {
                       </thead>
                       <tbody>
                         {lateFeePreview.rows.map((row) => (
-                          <tr key={`${row.original_invoice_id}-${row.late_fee_rule_id}`}>
+                          <tr key={`${row.original_invoice_id}-${row.late_fee_rule_id}-${row.applied_as_of_date}`}>
                             <td>{row.original_invoice_number}</td>
                             <td>{row.flat_number}</td>
                             <td>{row.due_date}</td>
+                            <td>{row.applied_as_of_date}</td>
                             <td>{row.days_overdue} days</td>
                             <td>{row.amount_due}</td>
                             <td>{row.late_fee_rule_name}</td>
@@ -10932,7 +10962,7 @@ function App() {
                         ))}
                         {!lateFeePreview.rows.length ? (
                           <tr>
-                            <td colSpan={8} className="empty-cell">
+                            <td colSpan={9} className="empty-cell">
                               No overdue invoices are eligible for the selected rules.
                             </td>
                           </tr>
@@ -11633,70 +11663,182 @@ function App() {
                   )}
                 </section>
               ) : (
-                <section className="data-panel">
-                  <div className="section-heading">
-                    <h2>Invoice Registry</h2>
-                    <span className="record-count">
-                      {isLoadingInvoices ? "Loading" : `${invoices.length} records`}
-                    </span>
-                  </div>
-                  {!invoices.length && !isLoadingInvoices ? (
-                    <div className="empty-state-panel">
-                      <h2>No invoices generated</h2>
-                      <p>Use Invoice Generation to preview and create bills for a selected period.</p>
+                <>
+                  <section className="data-panel full-width-panel">
+                    <div className="section-heading">
+                      <h2>Invoice Filters</h2>
+                      <span className="record-count">Blank filters show all invoices</span>
                     </div>
-                  ) : (
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Invoice</th>
-                            <th>Flat</th>
-                            <th>Date</th>
-                            <th>Due</th>
-                            <th>Total</th>
-                            <th>Balance</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {invoices.map((invoice) => {
-                            const flat = flats.find((item) => item.id === invoice.flat_id);
-                            return (
-                              <tr
-                                key={invoice.id}
-                                className="clickable-row"
-                                onClick={() => setSelectedInvoiceId(invoice.id)}
-                              >
-                                <td>{invoice.invoice_number}</td>
-                                <td>{flat?.flat_number ?? ""}</td>
-                                <td>{invoice.invoice_date}</td>
-                                <td>{invoice.due_date}</td>
-                                <td>{invoice.total_amount}</td>
-                                <td>{invoice.amount_due}</td>
-                                <td><StatusPill status={invoice.status} /></td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="secondary compact"
-                                    disabled={invoice.status === "cancelled" || Number(invoice.amount_paid) > 0}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void handleInvoiceCancel(invoice);
-                                    }}
-                                  >
-                                    Cancel
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                    <div className="form-grid">
+                      <label>
+                        Month
+                        <input
+                          type="month"
+                          value={invoiceFilters.month}
+                          onChange={(event) => {
+                            const month = event.target.value;
+                            const range = monthDateRange(month);
+                            setInvoiceFilters((current) => ({
+                              ...current,
+                              month,
+                              invoice_date_from: range.from,
+                              invoice_date_to: range.to
+                            }));
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Date From
+                        <input
+                          type="date"
+                          value={invoiceFilters.invoice_date_from}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({
+                              ...current,
+                              month: "",
+                              invoice_date_from: event.target.value
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Date To
+                        <input
+                          type="date"
+                          value={invoiceFilters.invoice_date_to}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({
+                              ...current,
+                              month: "",
+                              invoice_date_to: event.target.value
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Flat
+                        <select
+                          value={invoiceFilters.flat_id}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({ ...current, flat_id: event.target.value }))
+                          }
+                        >
+                          <option value="">All flats</option>
+                          {flats.map((flat) => (
+                            <option key={flat.id} value={flat.id}>
+                              {flat.flat_number}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Status
+                        <select
+                          value={invoiceFilters.status}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({ ...current, status: event.target.value }))
+                          }
+                        >
+                          <option value="">All statuses</option>
+                          {invoiceStatuses.map((statusValue) => (
+                            <option key={statusValue} value={statusValue}>
+                              {statusValue}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
-                  )}
-                </section>
+                    <div className="form-actions">
+                      <button
+                        type="button"
+                        disabled={!selectedTenantId || !selectedSocietyId || isLoadingInvoices}
+                        onClick={() => void refreshInvoices(selectedTenantId, selectedSocietyId)}
+                      >
+                        Apply Filters
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={isLoadingInvoices}
+                        onClick={() => {
+                          setInvoiceFilters(invoiceFilterDefaults);
+                          void refreshInvoices(
+                            selectedTenantId,
+                            selectedSocietyId,
+                            token,
+                            invoiceFilterDefaults
+                          );
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </section>
+                  <section className="data-panel">
+                    <div className="section-heading">
+                      <h2>Invoice Registry</h2>
+                      <span className="record-count">
+                        {isLoadingInvoices ? "Loading" : `${invoices.length} records`}
+                      </span>
+                    </div>
+                    {!invoices.length && !isLoadingInvoices ? (
+                      <div className="empty-state-panel">
+                        <h2>No invoices found</h2>
+                        <p>Clear filters or use Invoice Generation to create bills for a selected period.</p>
+                      </div>
+                    ) : (
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Invoice</th>
+                              <th>Flat</th>
+                              <th>Date</th>
+                              <th>Due</th>
+                              <th>Total</th>
+                              <th>Balance</th>
+                              <th>Status</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {invoices.map((invoice) => {
+                              const flat = flats.find((item) => item.id === invoice.flat_id);
+                              return (
+                                <tr
+                                  key={invoice.id}
+                                  className="clickable-row"
+                                  onClick={() => setSelectedInvoiceId(invoice.id)}
+                                >
+                                  <td>{invoice.invoice_number}</td>
+                                  <td>{flat?.flat_number ?? ""}</td>
+                                  <td>{invoice.invoice_date}</td>
+                                  <td>{invoice.due_date}</td>
+                                  <td>{invoice.total_amount}</td>
+                                  <td>{invoice.amount_due}</td>
+                                  <td><StatusPill status={invoice.status} /></td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="secondary compact"
+                                      disabled={invoice.status === "cancelled" || Number(invoice.amount_paid) > 0}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void handleInvoiceCancel(invoice);
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                </>
               )}
             </section>
           ) : workspace === "payments" ? (

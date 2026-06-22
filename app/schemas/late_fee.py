@@ -55,6 +55,7 @@ class LateFeePreviewRow(BaseModel):
     flat_id: uuid.UUID
     flat_number: str
     due_date: date
+    applied_as_of_date: date
     days_overdue: int
     amount_due: Decimal = Field(ge=0, decimal_places=2)
     late_fee_rule_id: uuid.UUID

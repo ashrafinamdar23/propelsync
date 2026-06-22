@@ -1,0 +1,126 @@
+name: Release And Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag, for example 0.1.3"
+        required: true
+        type: string
+      vm_host:
+        description: "Public app host used for frontend build"
+        required: true
+        default: "app.primabonito.com"
+        type: string
+      deploy:
+        description: "Deploy to VM after pushing images"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: propelsync-release-deploy
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+  API_IMAGE_NAME: propelsync-api
+  GATEWAY_IMAGE_NAME: propelsync-gateway
+
+jobs:
+  build:
+    name: Build And Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.images.outputs.api_image }}
+      gateway_image: ${{ steps.images.outputs.gateway_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image names
+        id: images
+        run: |
+          owner="$(echo "${IMAGE_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          api_image="${REGISTRY}/${owner}/${API_IMAGE_NAME}:${{ inputs.version }}"
+          gateway_image="${REGISTRY}/${owner}/${GATEWAY_IMAGE_NAME}:${{ inputs.version }}"
+          echo "api_image=${api_image}" >> "$GITHUB_OUTPUT"
+          echo "gateway_image=${gateway_image}" >> "$GITHUB_OUTPUT"
+          echo "API_IMAGE=${api_image}" >> "$GITHUB_ENV"
+          echo "GATEWAY_IMAGE=${gateway_image}" >> "$GITHUB_ENV"
+          echo "GHCR_OWNER=${owner}" >> "$GITHUB_ENV"
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.images.outputs.api_image }}
+
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/nginx/Dockerfile.prod
+          push: true
+          tags: ${{ steps.images.outputs.gateway_image }}
+          build-args: |
+            VITE_BASE_PATH=/propelsync/
+            VITE_API_BASE_URL=/propelsync/api/v1
+            VITE_KEYCLOAK_URL=https://${{ inputs.vm_host }}
+            VITE_KEYCLOAK_REALM=propelsync
+            VITE_KEYCLOAK_CLIENT_ID=propelsync-web
+
+  deploy:
+    name: Deploy To VM
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ inputs.deploy }}
+    steps:
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/propelsync_vm
+          chmod 600 ~/.ssh/propelsync_vm
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy release
+        run: |
+          ssh -i ~/.ssh/propelsync_vm "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "APP_DIR='${{ secrets.VM_APP_DIR }}' GHCR_OWNER='${{ github.repository_owner }}' GHCR_USER='${{ secrets.GHCR_USER }}' GHCR_TOKEN='${{ secrets.GHCR_READ_TOKEN }}' VERSION='${{ inputs.version }}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="${APP_DIR:-/opt/propelsync}"
+          GHCR_OWNER="$(echo "${GHCR_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          GHCR_USER="${GHCR_USER:-${GHCR_OWNER}}"
+
+          cd "${APP_DIR}"
+
+          if [ -n "${GHCR_TOKEN:-}" ]; then
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          fi
+
+          sed -i -E "s#^PROPELSYNC_API_IMAGE=.*#PROPELSYNC_API_IMAGE=ghcr.io/${GHCR_OWNER}/propelsync-api:${VERSION}#" .env
+          sed -i -E "s#^PROPELSYNC_GATEWAY_IMAGE=.*#PROPELSYNC_GATEWAY_IMAGE=ghcr.io/${GHCR_OWNER}/propelsync-gateway:${VERSION}#" .env
+
+          docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml up -d --force-recreate api worker nginx
+          docker compose -f docker-compose.prod.yml exec -T api alembic upgrade head
+          docker compose -f docker-compose.prod.yml ps
+          REMOTE

@@ -149,7 +149,6 @@ def list_due_late_fee_rules(
                 LateFeeRule.society_id == society_id,
                 LateFeeRule.status == "active",
                 LateFeeRule.effective_from <= as_of_date,
-                (LateFeeRule.effective_to.is_(None) | (LateFeeRule.effective_to >= as_of_date)),
             )
             .order_by(LateFeeRule.name)
         )

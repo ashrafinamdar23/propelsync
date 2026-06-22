@@ -456,7 +456,10 @@ percent_of_due
 ```
 
 Rules support grace days, optional repeat interval days, optional maximum applications per invoice,
-effective dates, and an active/inactive lifecycle.
+effective dates, and an active/inactive lifecycle. A rule without `repeat_interval_days` is treated
+as a one-time penalty. A repeated rule is evaluated from the invoice due date plus grace days and
+can catch up missed scheduled runs by returning every missing application date up to the selected
+`as_of_date`, while respecting existing applications and the maximum application limit.
 
 Penalty application is a preview-first workflow. Admins select an `as_of_date` and one or more
 active late fee rules. Preview evaluates open overdue invoices and returns valid/skipped rows
@@ -468,10 +471,12 @@ is not mutated. `late_fee_applications` links the original invoice, penalty invo
 and amount for auditability and duplicate protection.
 
 When a backdated payment is recorded against the original invoice, the payment workflow revalidates
-active penalty applications for that invoice. If the original invoice is fully paid by its due date
-plus the rule's grace days, any unpaid penalty invoice is auto-cancelled, its journal entry is marked
-reversed, and the application is marked `cancelled`. Paid penalty invoices are not silently cancelled;
-they require a later adjustment or credit-note workflow.
+active penalty applications for that invoice. If the original invoice was fully paid before a
+penalty application's `applied_as_of_date`, that unpaid penalty invoice is auto-cancelled, its
+journal entry is marked reversed, and the application is marked `cancelled`. This keeps penalties
+through the actual payment date while cancelling later penalties that were only generated because
+the payment was posted late. Paid penalty invoices are not silently cancelled; they require a later
+adjustment or credit-note workflow.
 
 ## Scheduled Job Foundation APIs
 
@@ -495,7 +500,8 @@ and marks each run completed or failed.
 
 Billing runs process one due period per due rule, then advance `next_generation_date` based on the
 rule frequency. Penalty runs apply all currently due active penalty rules for the selected as-of
-date.
+date. If a daily/weekly penalty run was missed, the late-fee engine catches up the missing penalty
+application dates in the next run instead of applying only one penalty for the current date.
 
 The Celery worker can execute scheduled work through:
 

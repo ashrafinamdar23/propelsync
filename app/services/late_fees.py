@@ -294,6 +294,49 @@ def calculate_penalty_amount(rule: LateFeeRule, amount_due: Decimal) -> Decimal:
     return money(amount_due * rule.amount / Decimal("100.00"))
 
 
+def due_late_fee_application_dates(
+    *,
+    rule: LateFeeRule,
+    invoice: Invoice,
+    as_of_date: date,
+    existing_applications: list[LateFeeApplication],
+) -> list[date]:
+    first_eligible_date = invoice.due_date + timedelta(days=rule.grace_days + 1)
+    start_date = max(first_eligible_date, rule.effective_from)
+    end_date = min(as_of_date, rule.effective_to) if rule.effective_to is not None else as_of_date
+    if end_date < start_date:
+        return []
+
+    existing_dates = {application.applied_as_of_date for application in existing_applications}
+    max_applications = rule.max_applications_per_invoice
+    if rule.repeat_interval_days is None:
+        candidate_dates = [start_date]
+        max_applications = 1 if max_applications is None else min(max_applications, 1)
+    else:
+        if existing_dates:
+            start_date = max(start_date, max(existing_dates) + timedelta(days=rule.repeat_interval_days))
+        candidate_dates = []
+        candidate_date = start_date
+        while candidate_date <= end_date:
+            candidate_dates.append(candidate_date)
+            candidate_date += timedelta(days=rule.repeat_interval_days)
+
+    remaining_applications = None
+    if max_applications is not None:
+        remaining_applications = max(max_applications - len(existing_applications), 0)
+        if remaining_applications == 0:
+            return []
+
+    due_dates: list[date] = []
+    for candidate_date in candidate_dates:
+        if candidate_date in existing_dates:
+            continue
+        due_dates.append(candidate_date)
+        if remaining_applications is not None and len(due_dates) >= remaining_applications:
+            break
+    return due_dates
+
+
 def build_late_fee_preview(
     *,
     payload: LateFeePreviewRequest,
@@ -310,52 +353,64 @@ def build_late_fee_preview(
             continue
         for rule in rules:
             errors: list[str] = []
-            status = "valid"
             days_overdue = max((payload.as_of_date - invoice.due_date).days, 0)
             existing_applications = applications_by_invoice_rule.get((invoice.id, rule.id), [])
-            latest_application_date = max((item.applied_as_of_date for item in existing_applications), default=None)
+            due_application_dates = due_late_fee_application_dates(
+                rule=rule,
+                invoice=invoice,
+                as_of_date=payload.as_of_date,
+                existing_applications=existing_applications,
+            )
 
-            if not late_fee_rule_is_effective(rule, payload.as_of_date):
-                status = "skipped"
-                errors.append("Late fee rule is not effective as of this date.")
             if payload.as_of_date <= invoice.due_date + timedelta(days=rule.grace_days):
-                status = "skipped"
                 errors.append("Invoice is still within its grace period.")
             if rule.max_applications_per_invoice is not None and len(existing_applications) >= rule.max_applications_per_invoice:
-                status = "skipped"
                 errors.append("Maximum applications reached for this invoice.")
-            if latest_application_date == payload.as_of_date:
-                status = "skipped"
-                errors.append("Late fee already applied for this invoice and date.")
-            if (
-                latest_application_date is not None
-                and rule.repeat_interval_days is not None
-                and latest_application_date + timedelta(days=rule.repeat_interval_days) > payload.as_of_date
-            ):
-                status = "skipped"
-                errors.append("Repeat interval has not elapsed.")
+            if not due_application_dates and not errors:
+                errors.append("No late fee application is due for this invoice and rule as of this date.")
 
             penalty_amount = calculate_penalty_amount(rule, invoice.amount_due)
             if penalty_amount <= 0:
-                status = "skipped"
                 errors.append("Penalty amount is zero.")
 
-            rows.append(
-                LateFeePreviewRow(
-                    original_invoice_id=invoice.id,
-                    original_invoice_number=invoice.invoice_number,
-                    flat_id=invoice.flat_id,
-                    flat_number=flat.flat_number,
-                    due_date=invoice.due_date,
-                    days_overdue=days_overdue,
-                    amount_due=money(invoice.amount_due),
-                    late_fee_rule_id=rule.id,
-                    late_fee_rule_name=rule.name,
-                    status=status,
-                    errors=errors,
-                    penalty_amount=penalty_amount if status == "valid" else Decimal("0.00"),
+            if errors or not due_application_dates:
+                rows.append(
+                    LateFeePreviewRow(
+                        original_invoice_id=invoice.id,
+                        original_invoice_number=invoice.invoice_number,
+                        flat_id=invoice.flat_id,
+                        flat_number=flat.flat_number,
+                        due_date=invoice.due_date,
+                        applied_as_of_date=payload.as_of_date,
+                        days_overdue=days_overdue,
+                        amount_due=money(invoice.amount_due),
+                        late_fee_rule_id=rule.id,
+                        late_fee_rule_name=rule.name,
+                        status="skipped",
+                        errors=errors,
+                        penalty_amount=Decimal("0.00"),
+                    )
                 )
-            )
+                continue
+
+            for application_date in due_application_dates:
+                rows.append(
+                    LateFeePreviewRow(
+                        original_invoice_id=invoice.id,
+                        original_invoice_number=invoice.invoice_number,
+                        flat_id=invoice.flat_id,
+                        flat_number=flat.flat_number,
+                        due_date=invoice.due_date,
+                        applied_as_of_date=application_date,
+                        days_overdue=max((application_date - invoice.due_date).days, 0),
+                        amount_due=money(invoice.amount_due),
+                        late_fee_rule_id=rule.id,
+                        late_fee_rule_name=rule.name,
+                        status="valid",
+                        errors=[],
+                        penalty_amount=penalty_amount,
+                    )
+                )
 
     valid_rows = sum(1 for row in rows if row.status == "valid")
     invalid_rows = sum(1 for row in rows if row.status == "invalid")
@@ -515,13 +570,13 @@ def apply_late_fees(
                 session,
                 tenant_context=tenant_context,
                 society_id=society_id,
-                invoice_date=payload.as_of_date,
-                billing_period_start=payload.as_of_date,
+                invoice_date=row.applied_as_of_date,
+                billing_period_start=row.applied_as_of_date,
             ),
-            invoice_date=payload.as_of_date,
-            due_date=payload.as_of_date,
-            billing_period_start=payload.as_of_date,
-            billing_period_end=payload.as_of_date,
+            invoice_date=row.applied_as_of_date,
+            due_date=row.applied_as_of_date,
+            billing_period_start=row.applied_as_of_date,
+            billing_period_end=row.applied_as_of_date,
             total_amount=row.penalty_amount,
             amount_paid=Decimal("0.00"),
             amount_due=row.penalty_amount,
@@ -560,7 +615,7 @@ def apply_late_fees(
                 late_fee_rule_id=rule.id,
                 original_invoice_id=row.original_invoice_id,
                 penalty_invoice_id=invoice.id,
-                applied_as_of_date=payload.as_of_date,
+                applied_as_of_date=row.applied_as_of_date,
                 penalty_amount=row.penalty_amount,
                 status="active",
             )
@@ -679,7 +734,7 @@ def auto_cancel_invalid_unpaid_penalties(
         if penalty_invoice.status == "cancelled" or penalty_invoice.amount_paid > 0:
             continue
 
-        cutoff_date = original_invoice.due_date + timedelta(days=rule.grace_days)
+        cutoff_date = application.applied_as_of_date - timedelta(days=1)
         paid_by_cutoff = amount_paid_by_cutoff(
             session,
             tenant_context=tenant_context,
@@ -722,6 +777,7 @@ def auto_cancel_invalid_unpaid_penalties(
                 "late_fee_rule_id": str(rule.id),
                 "paid_by_cutoff": str(paid_by_cutoff),
                 "cutoff_date": cutoff_date.isoformat(),
+                "applied_as_of_date": application.applied_as_of_date.isoformat(),
             },
         )
         cancelled_invoice_ids.append(penalty_invoice.id)

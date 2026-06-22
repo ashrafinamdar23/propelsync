@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,6 +57,24 @@ class KeycloakAdminClient:
         token = response.json()["access_token"]
         self.client.headers.update({"Authorization": f"Bearer {token}"})
         return token
+
+    def authenticate_with_retry(self, attempts: int = 24, delay_seconds: int = 5) -> str:
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.authenticate()
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt == attempts:
+                    break
+                print(
+                    "Waiting for Keycloak admin endpoint "
+                    f"({attempt}/{attempts}) at {self.base_url}..."
+                )
+                time.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unable to authenticate with Keycloak.")
 
     def ensure_realm(self, realm: str) -> bool:
         response = self.client.get(f"/admin/realms/{realm}")
@@ -364,7 +383,7 @@ def bootstrap_identity() -> BootstrapResult:
         settings.keycloak_admin_username,
         settings.keycloak_admin_password,
     ) as keycloak:
-        keycloak.authenticate()
+        keycloak.authenticate_with_retry()
         realm_created = keycloak.ensure_realm(settings.keycloak_realm)
         realm_session_settings_updated = keycloak.ensure_realm_session_settings(settings.keycloak_realm)
         api_client_created = keycloak.ensure_client(settings.keycloak_realm, api_client_payload())

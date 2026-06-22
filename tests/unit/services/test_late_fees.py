@@ -4,7 +4,12 @@ from decimal import Decimal
 
 from app.models import Flat, Invoice, JournalEntry, LateFeeApplication, LateFeeRule
 from app.schemas.late_fee import LateFeePreviewRequest
-from app.services.late_fees import auto_cancel_invalid_unpaid_penalties, build_late_fee_preview, calculate_penalty_amount
+from app.services.late_fees import (
+    auto_cancel_invalid_unpaid_penalties,
+    build_late_fee_preview,
+    calculate_penalty_amount,
+    due_late_fee_application_dates,
+)
 from app.tenants.context import TenantContext
 
 
@@ -136,7 +141,8 @@ def test_late_fee_preview_marks_overdue_invoice_valid() -> None:
     assert preview.valid_rows == 1
     assert preview.total_penalty_amount == Decimal("100.00")
     assert preview.rows[0].status == "valid"
-    assert preview.rows[0].days_overdue == 10
+    assert preview.rows[0].days_overdue == 6
+    assert preview.rows[0].applied_as_of_date == date(2026, 4, 16)
 
 
 def test_late_fee_preview_skips_invoice_inside_grace_period() -> None:
@@ -187,7 +193,96 @@ def test_late_fee_preview_skips_when_repeat_interval_has_not_elapsed() -> None:
 
     assert preview.valid_rows == 0
     assert preview.skipped_rows == 1
-    assert "Repeat interval" in preview.rows[0].errors[-1]
+    assert "No late fee application is due" in preview.rows[0].errors[-1]
+
+
+def test_late_fee_preview_catches_up_missed_daily_penalties() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        amount=Decimal("50.00"),
+        grace_days=5,
+        repeat_interval_days=1,
+        max_applications_per_invoice=12,
+    )
+    invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 15))
+    flat = build_flat(tenant_id=tenant_id, society_id=society_id, flat_id=invoice.flat_id)
+
+    preview = build_late_fee_preview(
+        payload=LateFeePreviewRequest(as_of_date=date(2026, 4, 25), late_fee_rule_ids=[rule.id]),
+        rules=[rule],
+        invoices=[invoice],
+        flats_by_id={flat.id: flat},
+        applications_by_invoice_rule={},
+        penalty_invoice_ids=set(),
+    )
+
+    assert preview.valid_rows == 5
+    assert preview.total_penalty_amount == Decimal("250.00")
+    assert [row.applied_as_of_date for row in preview.rows] == [
+        date(2026, 4, 21),
+        date(2026, 4, 22),
+        date(2026, 4, 23),
+        date(2026, 4, 24),
+        date(2026, 4, 25),
+    ]
+
+
+def test_late_fee_preview_catches_up_only_missing_daily_penalties() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        amount=Decimal("50.00"),
+        grace_days=5,
+        repeat_interval_days=1,
+        max_applications_per_invoice=12,
+    )
+    invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 15))
+    flat = build_flat(tenant_id=tenant_id, society_id=society_id, flat_id=invoice.flat_id)
+    application = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=invoice.id,
+        penalty_invoice_id=uuid.uuid4(),
+        applied_as_of_date=date(2026, 4, 21),
+        penalty_amount=Decimal("50.00"),
+    )
+
+    preview = build_late_fee_preview(
+        payload=LateFeePreviewRequest(as_of_date=date(2026, 4, 25), late_fee_rule_ids=[rule.id]),
+        rules=[rule],
+        invoices=[invoice],
+        flats_by_id={flat.id: flat},
+        applications_by_invoice_rule={(invoice.id, rule.id): [application]},
+        penalty_invoice_ids=set(),
+    )
+
+    assert preview.valid_rows == 4
+    assert [row.applied_as_of_date for row in preview.rows] == [
+        date(2026, 4, 22),
+        date(2026, 4, 23),
+        date(2026, 4, 24),
+        date(2026, 4, 25),
+    ]
+
+
+def test_due_late_fee_application_dates_treats_no_repeat_as_one_time() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(tenant_id=tenant_id, society_id=society_id, grace_days=0, repeat_interval_days=None)
+    invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 15))
+
+    assert due_late_fee_application_dates(
+        rule=rule,
+        invoice=invoice,
+        as_of_date=date(2026, 4, 25),
+        existing_applications=[],
+    ) == [date(2026, 4, 16)]
 
 
 def test_late_fee_preview_does_not_penalize_penalty_invoices() -> None:
@@ -299,3 +394,78 @@ def test_auto_cancel_invalid_penalty_keeps_paid_penalty_invoice() -> None:
     assert cancelled_ids == []
     assert penalty_invoice.status == "paid"
     assert application.status == "active"
+
+
+def test_auto_cancel_invalid_penalty_after_backdated_full_payment_date() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        grace_days=5,
+        repeat_interval_days=1,
+        max_applications_per_invoice=12,
+    )
+    original_invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 15))
+    original_invoice.total_amount = Decimal("1000.00")
+    original_invoice.amount_due = Decimal("0.00")
+    original_invoice.status = "paid"
+    penalty_24 = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 24))
+    penalty_24.id = uuid.uuid4()
+    penalty_24.invoice_number = "INV-PEN-024"
+    penalty_24.total_amount = Decimal("50.00")
+    penalty_24.amount_paid = Decimal("0.00")
+    penalty_24.amount_due = Decimal("50.00")
+    penalty_25 = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 25))
+    penalty_25.id = uuid.uuid4()
+    penalty_25.invoice_number = "INV-PEN-025"
+    penalty_25.total_amount = Decimal("50.00")
+    penalty_25.amount_paid = Decimal("0.00")
+    penalty_25.amount_due = Decimal("50.00")
+    application_24 = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=original_invoice.id,
+        penalty_invoice_id=penalty_24.id,
+        applied_as_of_date=date(2026, 4, 24),
+        penalty_amount=Decimal("50.00"),
+        status="active",
+    )
+    application_25 = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=original_invoice.id,
+        penalty_invoice_id=penalty_25.id,
+        applied_as_of_date=date(2026, 4, 25),
+        penalty_amount=Decimal("50.00"),
+        status="active",
+    )
+    session = FakeSession(
+        scalar_results=[
+            Decimal("0.00"),  # Paid by 2026-04-23, so 24th penalty remains.
+            Decimal("1000.00"),  # Paid by 2026-04-24, so 25th penalty is cancelled.
+        ],
+        scalars_results=[
+            [application_24, application_25],
+            [original_invoice],
+            [rule],
+            [penalty_24, penalty_25],
+        ],
+    )
+
+    cancelled_ids = auto_cancel_invalid_unpaid_penalties(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        original_invoice_ids=[original_invoice.id],
+        actor=FakeActor(),  # type: ignore[arg-type]
+    )
+
+    assert cancelled_ids == [penalty_25.id]
+    assert penalty_24.status != "cancelled"
+    assert application_24.status == "active"
+    assert penalty_25.status == "cancelled"
+    assert penalty_25.amount_due == Decimal("0.00")
+    assert application_25.status == "cancelled"

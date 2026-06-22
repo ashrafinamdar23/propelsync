@@ -47,11 +47,13 @@ class FakeSession:
         self.scalar_results = scalar_results or []
         self.scalars_results = scalars_results or []
         self.added: list[object] = []
+        self.scalars_calls: list[object] = []
 
     def scalar(self, *_: object) -> object | None:
         return self.scalar_results.pop(0) if self.scalar_results else None
 
-    def scalars(self, *_: object) -> FakeScalarResult:
+    def scalars(self, *args: object) -> FakeScalarResult:
+        self.scalars_calls.append(args[0])
         return FakeScalarResult(self.scalars_results.pop(0) if self.scalars_results else [])
 
     def add(self, instance: object) -> None:
@@ -180,6 +182,30 @@ def test_list_invoices_returns_tenant_scoped_rows() -> None:
     )
 
     assert rows == [invoice]
+
+
+def test_list_invoices_applies_optional_filters() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    society = Society(id=society_id, tenant_id=tenant_id, name="Dream Savera")
+    session = FakeSession(scalar_results=[society], scalars_results=[[]])
+
+    list_invoices(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        flat_id=flat_id,
+        status="issued",
+        invoice_date_from=date(2026, 4, 1),
+        invoice_date_to=date(2026, 4, 30),
+    )
+
+    params = session.scalars_calls[0].compile().params
+    assert flat_id in params.values()
+    assert "issued" in params.values()
+    assert date(2026, 4, 1) in params.values()
+    assert date(2026, 4, 30) in params.values()
 
 
 def test_list_invoice_line_items_returns_ordered_rows() -> None:

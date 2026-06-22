@@ -84,7 +84,7 @@ docker build -t "$API_IMAGE" .
 Build gateway image:
 
 ```bash
-docker build \
+MSYS_NO_PATHCONV=1 docker build \
   -f infrastructure/nginx/Dockerfile.prod \
   --build-arg VITE_BASE_PATH=/propelsync/ \
   --build-arg VITE_API_BASE_URL=/propelsync/api/v1 \
@@ -98,6 +98,10 @@ docker build \
 Important: Vite values are baked into the gateway image at build time. Build the gateway image for
 the target VM hostname or domain.
 
+On Windows Git Bash, keep `MSYS_NO_PATHCONV=1` on the gateway build command. Otherwise Git Bash may
+rewrite `/propelsync/` into a Windows path such as `/Program Files/Git/propelsync/`, which makes the
+deployed page load blank with broken asset URLs.
+
 ## 4. Test Images Locally
 
 Optional quick checks:
@@ -108,6 +112,18 @@ docker run --rm \
   --add-host api:127.0.0.1 \
   --add-host keycloak:127.0.0.1 \
   -v "$PWD/infrastructure/nginx/certs:/etc/nginx/certs:ro" \
+  "$GATEWAY_IMAGE" nginx -t
+```
+
+On Windows Git Bash, use a Windows-style source path and disable MSYS path conversion for the
+container path:
+
+```bash
+CERT_DIR="$(pwd -W)/infrastructure/nginx/certs"
+MSYS_NO_PATHCONV=1 docker run --rm \
+  --add-host api:127.0.0.1 \
+  --add-host keycloak:127.0.0.1 \
+  -v "$CERT_DIR:/etc/nginx/certs:ro" \
   "$GATEWAY_IMAGE" nginx -t
 ```
 
@@ -200,7 +216,7 @@ export API_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-api:$VERSION
 export GATEWAY_IMAGE=ghcr.io/$GHCR_OWNER/propelsync-gateway:$VERSION
 
 docker build -t "$API_IMAGE" .
-docker build \
+MSYS_NO_PATHCONV=1 docker build \
   -f infrastructure/nginx/Dockerfile.prod \
   --build-arg VITE_BASE_PATH=/propelsync/ \
   --build-arg VITE_API_BASE_URL=/propelsync/api/v1 \

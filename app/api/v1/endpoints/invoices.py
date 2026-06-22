@@ -1,7 +1,8 @@
 from typing import Annotated
 import uuid
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.deps import get_db
@@ -44,9 +45,21 @@ def read_invoices(
     society_id: uuid.UUID,
     tenant_context: Annotated[TenantContext, Depends(require_society_admin_context)],
     db: Annotated[Session, Depends(get_db)],
+    flat_id: Annotated[uuid.UUID | None, Query()] = None,
+    invoice_date_from: Annotated[date | None, Query()] = None,
+    invoice_date_to: Annotated[date | None, Query()] = None,
+    invoice_status: Annotated[str | None, Query(alias="status")] = None,
 ) -> list[InvoiceRead]:
     try:
-        invoices = list_invoices(db, tenant_context=tenant_context, society_id=society_id)
+        invoices = list_invoices(
+            db,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            flat_id=flat_id,
+            status=invoice_status,
+            invoice_date_from=invoice_date_from,
+            invoice_date_to=invoice_date_to,
+        )
     except InvoiceSocietyNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Society not found.") from exc
     except InvoiceGenerationRuleSelectionError as exc:
