@@ -42,10 +42,12 @@ VM_USER=mscoe
 VM_SSH_KEY=<private SSH key allowed to log in as mscoe>
 VM_APP_DIR=/opt/propelsync
 GHCR_USER=ashrafinamdar23
+GHCR_WRITE_TOKEN=<GitHub token with write:packages>
 GHCR_READ_TOKEN=<GitHub token with read:packages>
 ```
 
-`GITHUB_TOKEN` is provided automatically by GitHub Actions and is used to push images to GHCR.
+`GHCR_WRITE_TOKEN` is used by GitHub Actions to push release images to GHCR.
+`GHCR_READ_TOKEN` is used by the VM to pull private GHCR images during deployment.
 
 ## VM SSH Key
 
@@ -69,7 +71,20 @@ Verify the key from your laptop before adding it to GitHub:
 ssh -p 18022 -i propelsync_github_actions mscoe@app.primabonito.com
 ```
 
-## GHCR Pull Token
+## GHCR Tokens
+
+Create a GitHub Personal Access Token for GitHub Actions image publishing with:
+
+```text
+write:packages
+read:packages
+```
+
+Store it as:
+
+```text
+GHCR_WRITE_TOKEN
+```
 
 Create a GitHub Personal Access Token for the VM with:
 
