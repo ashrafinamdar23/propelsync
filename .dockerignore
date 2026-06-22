@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+.env
+*.log
+propelsync_postgres_data

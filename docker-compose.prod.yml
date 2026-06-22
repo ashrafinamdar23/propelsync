@@ -1,0 +1,180 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: propelsync-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  web:
+    image: ${PROPELSYNC_WEB_IMAGE}
+    container_name: propelsync-web
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+  api:
+    image: ${PROPELSYNC_API_IMAGE}
+    container_name: propelsync-api
+    restart: unless-stopped
+    command: ${API_COMMAND:-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2}
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_EXTERNAL_URL: ${PUBLIC_KEYCLOAK_ORIGIN}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-propelsync}
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_API_CLIENT_ID: ${KEYCLOAK_API_CLIENT_ID:-propelsync-api}
+      KEYCLOAK_WEB_CLIENT_ID: ${KEYCLOAK_WEB_CLIENT_ID:-propelsync-web}
+      KEYCLOAK_VERIFY_AUDIENCE: ${KEYCLOAK_VERIFY_AUDIENCE:-true}
+      KEYCLOAK_EXTRA_ISSUERS: ${KEYCLOAK_EXTRA_ISSUERS}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN}
+      PUBLIC_APP_HTTPS_ORIGIN: ${PUBLIC_APP_HTTPS_ORIGIN}
+      BOOTSTRAP_PLATFORM_ADMIN_EMAIL: ${BOOTSTRAP_PLATFORM_ADMIN_EMAIL}
+      BOOTSTRAP_PLATFORM_ADMIN_MOBILE_NUMBER: ${BOOTSTRAP_PLATFORM_ADMIN_MOBILE_NUMBER:-}
+      BOOTSTRAP_PLATFORM_ADMIN_FULL_NAME: ${BOOTSTRAP_PLATFORM_ADMIN_FULL_NAME:-Platform Admin}
+      BOOTSTRAP_PLATFORM_ADMIN_PASSWORD: ${BOOTSTRAP_PLATFORM_ADMIN_PASSWORD}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    image: ${PROPELSYNC_API_IMAGE}
+    container_name: propelsync-worker
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=INFO
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_EXTERNAL_URL: ${PUBLIC_KEYCLOAK_ORIGIN}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-propelsync}
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_API_CLIENT_ID: ${KEYCLOAK_API_CLIENT_ID:-propelsync-api}
+      KEYCLOAK_WEB_CLIENT_ID: ${KEYCLOAK_WEB_CLIENT_ID:-propelsync-web}
+      KEYCLOAK_VERIFY_AUDIENCE: ${KEYCLOAK_VERIFY_AUDIENCE:-true}
+      KEYCLOAK_EXTRA_ISSUERS: ${KEYCLOAK_EXTRA_ISSUERS}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN}
+      PUBLIC_APP_HTTPS_ORIGIN: ${PUBLIC_APP_HTTPS_ORIGIN}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: propelsync-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - propelsync_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.3
+    container_name: propelsync-keycloak
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/${KEYCLOAK_DB:-keycloak}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+    expose:
+      - "8080"
+      - "9000"
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+
+  keycloak-postgres:
+    image: postgres:16-alpine
+    container_name: propelsync-keycloak-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB:-keycloak}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER:-keycloak}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      - propelsync_keycloak_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: propelsync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - propelsync_postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  propelsync_postgres_data:
+  propelsync_keycloak_postgres_data:
+  propelsync_redis_data:
