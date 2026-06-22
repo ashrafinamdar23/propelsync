@@ -37,6 +37,7 @@ Required for VM deployment:
 
 ```text
 VM_HOST=app.primabonito.com
+VM_PORT=18022
 VM_USER=mscoe
 VM_SSH_KEY=<private SSH key allowed to log in as mscoe>
 VM_APP_DIR=/opt/propelsync
@@ -57,10 +58,16 @@ ssh-keygen -t ed25519 -C "propelsync-github-actions" -f propelsync_github_action
 Add the public key to the VM:
 
 ```bash
-ssh-copy-id -i propelsync_github_actions.pub mscoe@app.primabonito.com
+ssh-copy-id -p 18022 -i propelsync_github_actions.pub mscoe@app.primabonito.com
 ```
 
 Add the private key content as `VM_SSH_KEY`.
+
+Verify the key from your laptop before adding it to GitHub:
+
+```bash
+ssh -p 18022 -i propelsync_github_actions mscoe@app.primabonito.com
+```
 
 ## GHCR Pull Token
 
@@ -116,4 +123,3 @@ manually only when public URL, Keycloak client, or bootstrap admin settings chan
 ```bash
 docker compose -f docker-compose.prod.yml exec api python -m app.scripts.bootstrap_identity
 ```
-

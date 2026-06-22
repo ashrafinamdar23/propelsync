@@ -98,11 +98,11 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/propelsync_vm
           chmod 600 ~/.ssh/propelsync_vm
-          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -p "${{ secrets.VM_PORT }}" -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Deploy release
         run: |
-          ssh -i ~/.ssh/propelsync_vm "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+          ssh -p "${{ secrets.VM_PORT }}" -i ~/.ssh/propelsync_vm "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
             "APP_DIR='${{ secrets.VM_APP_DIR }}' GHCR_OWNER='${{ github.repository_owner }}' GHCR_USER='${{ secrets.GHCR_USER }}' GHCR_TOKEN='${{ secrets.GHCR_READ_TOKEN }}' VERSION='${{ inputs.version }}' bash -s" <<'REMOTE'
           set -euo pipefail
 
