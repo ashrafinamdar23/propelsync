@@ -540,6 +540,64 @@ def preview_late_fee_application(
     )
 
 
+def restore_cancelled_late_fee_application(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    application: LateFeeApplication,
+    penalty_invoice: Invoice,
+    actor: User,
+) -> uuid.UUID:
+    if penalty_invoice.amount_paid > 0:
+        raise LateFeeApplicationValidationError(
+            LateFeePreviewResponse(
+                as_of_date=application.applied_as_of_date,
+                total_penalty_amount=Decimal("0.00"),
+                valid_count=0,
+                invalid_count=1,
+                rows=[],
+            )
+        )
+
+    application.status = "active"
+    penalty_invoice.status = "issued"
+    penalty_invoice.amount_paid = Decimal("0.00")
+    penalty_invoice.amount_due = money(penalty_invoice.total_amount)
+    penalty_invoice.notes = (
+        f"{penalty_invoice.notes}\nRestored after payment reversal."
+        if penalty_invoice.notes
+        else "Restored after payment reversal."
+    )
+    if penalty_invoice.journal_entry_id is not None:
+        journal_entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.id == penalty_invoice.journal_entry_id,
+                JournalEntry.tenant_id == tenant_context.tenant_id,
+                JournalEntry.society_id == society_id,
+            )
+        )
+        if journal_entry is not None:
+            journal_entry.status = "posted"
+
+    record_audit_log(
+        session,
+        action="late_fee_application.restored",
+        entity_type="Invoice",
+        entity_id=penalty_invoice.id,
+        actor_user_id=actor.id,
+        tenant_id=tenant_context.tenant_id,
+        summary=f"Penalty invoice restored: {penalty_invoice.invoice_number}",
+        metadata={
+            "society_id": str(society_id),
+            "original_invoice_id": str(application.original_invoice_id),
+            "late_fee_rule_id": str(application.late_fee_rule_id),
+            "applied_as_of_date": application.applied_as_of_date.isoformat(),
+        },
+    )
+    return penalty_invoice.id
+
+
 def apply_late_fees(
     session: Session,
     *,
@@ -582,6 +640,35 @@ def apply_late_fees(
             )
         )
     }
+    cancelled_applications = list(
+        session.scalars(
+            select(LateFeeApplication)
+            .where(
+                LateFeeApplication.tenant_id == tenant_context.tenant_id,
+                LateFeeApplication.society_id == society_id,
+                LateFeeApplication.late_fee_rule_id.in_(rule_ids),
+                LateFeeApplication.original_invoice_id.in_(original_invoice_ids),
+                LateFeeApplication.status == "cancelled",
+            )
+            .with_for_update()
+        )
+    )
+    cancelled_applications_by_key = {
+        (application.original_invoice_id, application.late_fee_rule_id, application.applied_as_of_date): application
+        for application in cancelled_applications
+    }
+    cancelled_penalty_invoices = {
+        invoice.id: invoice
+        for invoice in session.scalars(
+            select(Invoice)
+            .where(
+                Invoice.id.in_({application.penalty_invoice_id for application in cancelled_applications}),
+                Invoice.tenant_id == tenant_context.tenant_id,
+                Invoice.society_id == society_id,
+            )
+            .with_for_update()
+        )
+    }
 
     generated_invoice_ids: list[uuid.UUID] = []
     for row in preview.rows:
@@ -589,6 +676,24 @@ def apply_late_fees(
             continue
         original_invoice = original_invoices[row.original_invoice_id]
         rule = rules[row.late_fee_rule_id]
+        existing_cancelled_application = cancelled_applications_by_key.get(
+            (row.original_invoice_id, row.late_fee_rule_id, row.applied_as_of_date)
+        )
+        if existing_cancelled_application is not None:
+            penalty_invoice = cancelled_penalty_invoices.get(existing_cancelled_application.penalty_invoice_id)
+            if penalty_invoice is not None:
+                generated_invoice_ids.append(
+                    restore_cancelled_late_fee_application(
+                        session,
+                        tenant_context=tenant_context,
+                        society_id=society_id,
+                        application=existing_cancelled_application,
+                        penalty_invoice=penalty_invoice,
+                        actor=actor,
+                    )
+                )
+                continue
+
         invoice = Invoice(
             tenant_id=tenant_context.tenant_id,
             society_id=society_id,

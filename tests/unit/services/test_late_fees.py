@@ -9,6 +9,7 @@ from app.services.late_fees import (
     build_late_fee_preview,
     calculate_penalty_amount,
     due_late_fee_application_dates,
+    restore_cancelled_late_fee_application,
 )
 from app.tenants.context import TenantContext
 
@@ -666,3 +667,54 @@ def test_auto_cancel_keeps_penalties_through_full_payment_date() -> None:
     assert application_25.status == "active"
     assert penalty_26.status == "cancelled"
     assert application_26.status == "cancelled"
+
+
+def test_restore_cancelled_late_fee_application_reopens_penalty_invoice() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(tenant_id=tenant_id, society_id=society_id)
+    penalty_invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 6, 21))
+    penalty_invoice.id = uuid.uuid4()
+    penalty_invoice.invoice_number = "INV-PEN-021"
+    penalty_invoice.total_amount = Decimal("50.00")
+    penalty_invoice.amount_paid = Decimal("0.00")
+    penalty_invoice.amount_due = Decimal("0.00")
+    penalty_invoice.status = "cancelled"
+    penalty_invoice.notes = "Auto-cancelled: original invoice paid within grace period."
+    penalty_invoice.journal_entry_id = uuid.uuid4()
+    journal = JournalEntry(
+        id=penalty_invoice.journal_entry_id,
+        tenant_id=tenant_id,
+        society_id=society_id,
+        journal_date=date(2026, 6, 21),
+        source_type="invoice",
+        reference_number=penalty_invoice.invoice_number,
+        description="Penalty invoice",
+        status="reversed",
+    )
+    application = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=uuid.uuid4(),
+        penalty_invoice_id=penalty_invoice.id,
+        applied_as_of_date=date(2026, 6, 21),
+        penalty_amount=Decimal("50.00"),
+        status="cancelled",
+    )
+    session = FakeSession(scalar_results=[journal])
+
+    restored_invoice_id = restore_cancelled_late_fee_application(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        application=application,
+        penalty_invoice=penalty_invoice,
+        actor=FakeActor(),  # type: ignore[arg-type]
+    )
+
+    assert restored_invoice_id == penalty_invoice.id
+    assert application.status == "active"
+    assert penalty_invoice.status == "issued"
+    assert penalty_invoice.amount_due == Decimal("50.00")
+    assert journal.status == "posted"

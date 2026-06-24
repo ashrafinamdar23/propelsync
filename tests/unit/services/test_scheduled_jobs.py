@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from app.models import BillingRule, Flat, Invoice, LateFeeRule, ScheduledJobRun, Society
+from app.models import BillingRule, Flat, Invoice, InvoiceLateFeeRule, LateFeeRule, ScheduledJobRun, Society
 from app.services.scheduled_jobs import (
     billing_period_for,
     complete_job_run,
@@ -134,6 +134,15 @@ def test_get_due_work_includes_late_fee_eligible_count() -> None:
         amount_due=Decimal("3000.00"),
         status="issued",
     )
+    invoice_late_fee_rule = InvoiceLateFeeRule(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        invoice_id=invoice.id,
+        late_fee_rule_id=late_fee_rule.id,
+        priority=0,
+        source_type="billing_rule",
+        status="active",
+    )
     session = FakeSession(
         scalar_results=[society, society],
         scalars_results=[
@@ -141,6 +150,7 @@ def test_get_due_work_includes_late_fee_eligible_count() -> None:
             [late_fee_rule],
             [late_fee_rule],
             [invoice],
+            [invoice_late_fee_rule],
             [flat],
             [],
         ],
