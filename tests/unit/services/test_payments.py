@@ -2,16 +2,19 @@ from datetime import date
 from decimal import Decimal
 import uuid
 
-from app.models import ChartOfAccount, Invoice, JournalEntry, JournalLine, Payment, Society
+from app.models import ChartOfAccount, Invoice, JournalEntry, JournalLine, LateFeeApplication, Payment, Society
 from app.services.payments import (
     PaymentAllocationInvalidError,
     PaymentJournalPostingError,
+    build_oldest_first_allocations,
+    create_payment,
     money,
     post_payment_journal,
     update_invoice_after_allocation,
     update_invoice_after_payment_reversal,
 )
 from app.tenants.context import TenantContext
+from app.schemas.payment import PaymentCreate
 
 
 class FakeScalarResult:
@@ -45,6 +48,17 @@ class FakeSession:
         for instance in self.added:
             if getattr(instance, "id", None) is None:
                 instance.id = uuid.uuid4()
+
+    def commit(self) -> None:
+        return None
+
+    def refresh(self, *_: object) -> None:
+        return None
+
+
+class FakeActor:
+    def __init__(self) -> None:
+        self.id = uuid.uuid4()
 
 
 def build_context(tenant_id: uuid.UUID) -> TenantContext:
@@ -142,6 +156,79 @@ def test_post_payment_journal_debits_deposit_and_credits_receivable() -> None:
     assert journal_lines[1].credit_amount == Decimal("500.00")
 
 
+def test_post_payment_journal_splits_unapplied_amount_to_member_advance() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    deposit_account = ChartOfAccount(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        account_code="1010",
+        account_name="Bank",
+        account_type="asset",
+        normal_balance="debit",
+        status="active",
+    )
+    receivable_account = ChartOfAccount(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        account_code="1100",
+        account_name="Maintenance Receivable",
+        account_type="asset",
+        normal_balance="debit",
+        status="active",
+    )
+    advance_account = ChartOfAccount(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        account_code="2010",
+        account_name="Owner Advance Balance",
+        account_type="liability",
+        normal_balance="credit",
+        status="active",
+    )
+    society = Society(
+        id=society_id,
+        tenant_id=tenant_id,
+        name="Dream Savera",
+        receivable_account_id=receivable_account.id,
+        member_advance_account_id=advance_account.id,
+    )
+    payment = Payment(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        flat_id=uuid.uuid4(),
+        deposit_account_id=deposit_account.id,
+        payment_date=date(2026, 7, 5),
+        amount=Decimal("700.00"),
+        unapplied_amount=Decimal("200.00"),
+        payment_mode="bank_transfer",
+        status="received",
+    )
+    session = FakeSession(
+        scalar_results=[society],
+        scalars_results=[[deposit_account, receivable_account, advance_account]],
+    )
+
+    post_payment_journal(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        payment=payment,
+    )
+
+    journal_lines = [item for item in session.added if isinstance(item, JournalLine)]
+    assert journal_lines[0].account_id == deposit_account.id
+    assert journal_lines[0].debit_amount == Decimal("700.00")
+    assert journal_lines[1].account_id == receivable_account.id
+    assert journal_lines[1].credit_amount == Decimal("500.00")
+    assert journal_lines[2].account_id == advance_account.id
+    assert journal_lines[2].credit_amount == Decimal("200.00")
+
+
 def test_post_payment_journal_requires_deposit_account() -> None:
     tenant_id = uuid.uuid4()
     payment = Payment(
@@ -168,6 +255,155 @@ def test_post_payment_journal_requires_deposit_account() -> None:
         return
 
     raise AssertionError("Expected missing deposit account error.")
+
+
+def test_build_oldest_first_allocations_uses_due_date_order() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    older_invoice = build_invoice()
+    older_invoice.tenant_id = tenant_id
+    older_invoice.society_id = society_id
+    older_invoice.flat_id = uuid.uuid4()
+    older_invoice.due_date = date(2026, 4, 10)
+    older_invoice.amount_due = Decimal("300.00")
+    newer_invoice = build_invoice()
+    newer_invoice.tenant_id = tenant_id
+    newer_invoice.society_id = society_id
+    newer_invoice.flat_id = older_invoice.flat_id
+    newer_invoice.due_date = date(2026, 5, 10)
+    newer_invoice.amount_due = Decimal("500.00")
+    session = FakeSession(scalars_results=[[older_invoice, newer_invoice]])
+
+    allocations = build_oldest_first_allocations(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        flat_id=older_invoice.flat_id,
+        amount=Decimal("650.00"),
+        payment_date=date(2026, 6, 24),
+    )
+
+    assert [allocation.invoice_id for allocation in allocations] == [older_invoice.id, newer_invoice.id]
+    assert [allocation.allocated_amount for allocation in allocations] == [
+        Decimal("300.00"),
+        Decimal("350.00"),
+    ]
+
+
+def test_build_oldest_first_allocations_skips_future_penalty_when_original_paid() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    original_invoice = build_invoice(amount_due=Decimal("3000.00"))
+    original_invoice.tenant_id = tenant_id
+    original_invoice.society_id = society_id
+    original_invoice.flat_id = flat_id
+    original_invoice.total_amount = Decimal("3000.00")
+    original_invoice.due_date = date(2026, 4, 15)
+    penalty_invoice = build_invoice(amount_due=Decimal("100.00"))
+    penalty_invoice.tenant_id = tenant_id
+    penalty_invoice.society_id = society_id
+    penalty_invoice.flat_id = flat_id
+    penalty_invoice.total_amount = Decimal("100.00")
+    penalty_invoice.due_date = date(2026, 4, 16)
+    application = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=uuid.uuid4(),
+        original_invoice_id=original_invoice.id,
+        penalty_invoice_id=penalty_invoice.id,
+        applied_as_of_date=date(2026, 4, 16),
+        penalty_amount=Decimal("100.00"),
+        status="active",
+    )
+    session = FakeSession(scalars_results=[[original_invoice, penalty_invoice], [application]])
+
+    allocations = build_oldest_first_allocations(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        flat_id=flat_id,
+        amount=Decimal("3100.00"),
+        payment_date=date(2026, 4, 10),
+    )
+
+    assert [allocation.invoice_id for allocation in allocations] == [original_invoice.id]
+    assert [allocation.allocated_amount for allocation in allocations] == [Decimal("3000.00")]
+
+
+def test_create_payment_auto_allocates_oldest_invoices_when_none_supplied() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    deposit_account = ChartOfAccount(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        account_code="1010",
+        account_name="Bank",
+        account_type="asset",
+        normal_balance="debit",
+        status="active",
+    )
+    receivable_account = ChartOfAccount(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        account_code="1100",
+        account_name="Maintenance Receivable",
+        account_type="asset",
+        normal_balance="debit",
+        status="active",
+    )
+    society = Society(
+        id=society_id,
+        tenant_id=tenant_id,
+        name="Dream Savera",
+        receivable_account_id=receivable_account.id,
+    )
+    flat = type("FlatRef", (), {"id": flat_id})()
+    first_invoice = build_invoice(amount_due=Decimal("300.00"))
+    first_invoice.tenant_id = tenant_id
+    first_invoice.society_id = society_id
+    first_invoice.flat_id = flat_id
+    first_invoice.due_date = date(2026, 4, 10)
+    first_invoice.total_amount = Decimal("300.00")
+    second_invoice = build_invoice(amount_due=Decimal("500.00"))
+    second_invoice.tenant_id = tenant_id
+    second_invoice.society_id = society_id
+    second_invoice.flat_id = flat_id
+    second_invoice.due_date = date(2026, 5, 10)
+    session = FakeSession(
+        scalar_results=[society, flat, deposit_account, society],
+        scalars_results=[
+            [first_invoice, second_invoice],
+            [],
+            [first_invoice, second_invoice],
+            [],
+            [deposit_account, receivable_account],
+        ],
+    )
+
+    payment = create_payment(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        payload=PaymentCreate(
+            flat_id=flat_id,
+            deposit_account_id=deposit_account.id,
+            payment_date=date(2026, 6, 24),
+            amount=Decimal("650.00"),
+            payment_mode="bank_transfer",
+            allocations=[],
+        ),
+        actor=FakeActor(),  # type: ignore[arg-type]
+    )
+
+    assert payment.unapplied_amount == Decimal("0.00")
+    assert first_invoice.status == "paid"
+    assert first_invoice.amount_due == Decimal("0.00")
+    assert second_invoice.status == "partially_paid"
+    assert second_invoice.amount_due == Decimal("150.00")
 
 
 def test_partial_payment_updates_invoice_balance() -> None:

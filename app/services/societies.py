@@ -70,6 +70,30 @@ def ensure_payable_account_valid(
         raise SocietyAccountInvalidError("Payable account must be an active liability account.")
 
 
+def ensure_member_advance_account_valid(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    account_id: uuid.UUID | None,
+    society_id: uuid.UUID | None = None,
+) -> None:
+    if account_id is None:
+        return
+    if society_id is None:
+        raise SocietyAccountInvalidError("Member advance account can be configured after society creation.")
+    account = session.scalar(
+        select(ChartOfAccount).where(
+            ChartOfAccount.id == account_id,
+            ChartOfAccount.tenant_id == tenant_context.tenant_id,
+            ChartOfAccount.society_id == society_id,
+            ChartOfAccount.account_type == "liability",
+            ChartOfAccount.status == "active",
+        )
+    )
+    if account is None:
+        raise SocietyAccountInvalidError("Member advance account must be an active liability account.")
+
+
 def list_societies(session: Session, tenant_context: TenantContext) -> list[Society]:
     return list(
         session.scalars(
@@ -139,6 +163,12 @@ def create_society(
         account_id=payload.payable_account_id,
         society_id=None,
     )
+    ensure_member_advance_account_valid(
+        session,
+        tenant_context=tenant_context,
+        account_id=payload.member_advance_account_id,
+        society_id=None,
+    )
 
     society = Society(
         tenant_id=tenant_context.tenant_id,
@@ -156,6 +186,7 @@ def create_society(
         financial_year_start_month=payload.financial_year_start_month,
         receivable_account_id=payload.receivable_account_id,
         payable_account_id=payload.payable_account_id,
+        member_advance_account_id=payload.member_advance_account_id,
         status="active",
     )
     session.add(society)
@@ -174,6 +205,9 @@ def create_society(
             "currency": society.currency,
             "receivable_account_id": str(society.receivable_account_id) if society.receivable_account_id else None,
             "payable_account_id": str(society.payable_account_id) if society.payable_account_id else None,
+            "member_advance_account_id": (
+                str(society.member_advance_account_id) if society.member_advance_account_id else None
+            ),
         },
     )
     session.commit()
@@ -208,6 +242,12 @@ def update_society(
         account_id=payload.payable_account_id,
         society_id=society.id,
     )
+    ensure_member_advance_account_valid(
+        session,
+        tenant_context=tenant_context,
+        account_id=payload.member_advance_account_id,
+        society_id=society.id,
+    )
 
     previous_values = {
         "name": society.name,
@@ -220,6 +260,9 @@ def update_society(
         "financial_year_start_month": society.financial_year_start_month,
         "receivable_account_id": str(society.receivable_account_id) if society.receivable_account_id else None,
         "payable_account_id": str(society.payable_account_id) if society.payable_account_id else None,
+        "member_advance_account_id": (
+            str(society.member_advance_account_id) if society.member_advance_account_id else None
+        ),
     }
 
     society.name = payload.name
@@ -236,6 +279,7 @@ def update_society(
     society.financial_year_start_month = payload.financial_year_start_month
     society.receivable_account_id = payload.receivable_account_id
     society.payable_account_id = payload.payable_account_id
+    society.member_advance_account_id = payload.member_advance_account_id
 
     record_audit_log(
         session,
@@ -258,6 +302,9 @@ def update_society(
                 "financial_year_start_month": society.financial_year_start_month,
                 "receivable_account_id": str(society.receivable_account_id) if society.receivable_account_id else None,
                 "payable_account_id": str(society.payable_account_id) if society.payable_account_id else None,
+                "member_advance_account_id": (
+                    str(society.member_advance_account_id) if society.member_advance_account_id else None
+                ),
             },
         },
     )

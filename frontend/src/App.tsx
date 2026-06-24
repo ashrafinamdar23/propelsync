@@ -283,7 +283,8 @@ const societyFormDefaults = {
   currency: "INR",
   financial_year_start_month: 4,
   receivable_account_id: "",
-  payable_account_id: ""
+  payable_account_id: "",
+  member_advance_account_id: ""
 };
 
 const buildingFormDefaults = {
@@ -690,6 +691,27 @@ function monthDateRange(monthValue: string): { from: string; to: string } {
   return { from: toIsoDate(from), to: toIsoDate(to) };
 }
 
+function buildOldestFirstPaymentAllocations(openInvoices: Invoice[], amount: string): Record<string, string> {
+  let remainingAmount = Number(amount) || 0;
+  const allocations: Record<string, string> = {};
+  if (remainingAmount <= 0) {
+    return allocations;
+  }
+
+  openInvoices.forEach((invoice) => {
+    if (remainingAmount <= 0) {
+      return;
+    }
+    const invoiceBalance = Number(invoice.amount_due) || 0;
+    const allocatedAmount = Math.min(remainingAmount, invoiceBalance);
+    if (allocatedAmount > 0) {
+      allocations[invoice.id] = allocatedAmount.toFixed(2);
+      remainingAmount = Number((remainingAmount - allocatedAmount).toFixed(2));
+    }
+  });
+  return allocations;
+}
+
 function currentMonthInvoiceGenerationDefaults(): InvoiceGenerationPayload {
   const now = new Date();
   const periodStart = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
@@ -828,6 +850,7 @@ function societyFromAccess(society: AccessSociety): Society {
     financial_year_start_month: 4,
     receivable_account_id: null,
     payable_account_id: null,
+    member_advance_account_id: null,
     status: society.status,
     created_at: "",
     updated_at: ""
@@ -1328,12 +1351,24 @@ function App() {
 
   const paymentOpenInvoices = useMemo(
     () =>
-      invoices.filter(
-        (invoice) =>
-          invoice.flat_id === paymentForm.flat_id &&
-          !["paid", "cancelled"].includes(invoice.status) &&
-          Number(invoice.amount_due) > 0
-      ),
+      invoices
+        .filter(
+          (invoice) =>
+            invoice.flat_id === paymentForm.flat_id &&
+            !["paid", "cancelled"].includes(invoice.status) &&
+            Number(invoice.amount_due) > 0
+        )
+        .sort((left, right) => {
+          const dueDateComparison = left.due_date.localeCompare(right.due_date);
+          if (dueDateComparison !== 0) {
+            return dueDateComparison;
+          }
+          const invoiceDateComparison = left.invoice_date.localeCompare(right.invoice_date);
+          if (invoiceDateComparison !== 0) {
+            return invoiceDateComparison;
+          }
+          return left.invoice_number.localeCompare(right.invoice_number);
+        }),
     [invoices, paymentForm.flat_id]
   );
 
@@ -2683,7 +2718,8 @@ function App() {
       currency: societyForm.currency,
       financial_year_start_month: societyForm.financial_year_start_month,
       receivable_account_id: societyForm.receivable_account_id || null,
-      payable_account_id: societyForm.payable_account_id || null
+      payable_account_id: societyForm.payable_account_id || null,
+      member_advance_account_id: societyForm.member_advance_account_id || null
     };
 
     try {
@@ -3322,7 +3358,25 @@ function App() {
 
   function handlePaymentFlatChange(flatId: string) {
     setPaymentForm((current) => ({ ...current, flat_id: flatId }));
-    setPaymentAllocations({});
+    const openInvoicesForFlat = invoices
+      .filter(
+        (invoice) =>
+          invoice.flat_id === flatId &&
+          !["paid", "cancelled"].includes(invoice.status) &&
+          Number(invoice.amount_due) > 0
+      )
+      .sort((left, right) => {
+        const dueDateComparison = left.due_date.localeCompare(right.due_date);
+        if (dueDateComparison !== 0) {
+          return dueDateComparison;
+        }
+        const invoiceDateComparison = left.invoice_date.localeCompare(right.invoice_date);
+        if (invoiceDateComparison !== 0) {
+          return invoiceDateComparison;
+        }
+        return left.invoice_number.localeCompare(right.invoice_number);
+      });
+    setPaymentAllocations(buildOldestFirstPaymentAllocations(openInvoicesForFlat, paymentForm.amount));
   }
 
   async function handlePaymentSubmit(event: FormEvent<HTMLFormElement>) {
@@ -4502,7 +4556,8 @@ function App() {
       currency: society.currency,
       financial_year_start_month: society.financial_year_start_month,
       receivable_account_id: society.receivable_account_id ?? "",
-      payable_account_id: society.payable_account_id ?? ""
+      payable_account_id: society.payable_account_id ?? "",
+      member_advance_account_id: society.member_advance_account_id ?? ""
     });
   }
 
@@ -7443,6 +7498,22 @@ function App() {
                     value={societyForm.payable_account_id}
                     onChange={(event) =>
                       setSocietyForm({ ...societyForm, payable_account_id: event.target.value })
+                    }
+                  >
+                    <option value="">Configure after chart of accounts</option>
+                    {activeLiabilityAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.account_code} - {account.account_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Member Advance Account
+                  <select
+                    value={societyForm.member_advance_account_id}
+                    onChange={(event) =>
+                      setSocietyForm({ ...societyForm, member_advance_account_id: event.target.value })
                     }
                   >
                     <option value="">Configure after chart of accounts</option>
@@ -11897,9 +11968,11 @@ function App() {
                       min="0.01"
                       step="0.01"
                       value={paymentForm.amount}
-                      onChange={(event) =>
-                        setPaymentForm((current) => ({ ...current, amount: event.target.value }))
-                      }
+                      onChange={(event) => {
+                        const amount = event.target.value;
+                        setPaymentForm((current) => ({ ...current, amount }));
+                        setPaymentAllocations(buildOldestFirstPaymentAllocations(paymentOpenInvoices, amount));
+                      }}
                       required
                     />
                   </label>
@@ -11926,8 +11999,9 @@ function App() {
                     onChange={(event) =>
                       setPaymentForm((current) => ({ ...current, deposit_account_id: event.target.value }))
                     }
+                    required
                   >
-                    <option value="">Not selected</option>
+                    <option value="">Select deposit account</option>
                     {activeAssetAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {account.account_code} - {account.account_name}
@@ -11965,6 +12039,7 @@ function App() {
                   disabled={
                     isSaving ||
                     !paymentForm.flat_id ||
+                    !paymentForm.deposit_account_id ||
                     !paymentForm.amount ||
                     paymentAllocatedTotal > Number(paymentForm.amount)
                   }
@@ -11977,6 +12052,28 @@ function App() {
                 <div className="section-heading">
                   <h2>Open Invoices</h2>
                   <span className="record-count">{paymentOpenInvoices.length} open</span>
+                </div>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!paymentForm.amount || !paymentOpenInvoices.length}
+                    onClick={() =>
+                      setPaymentAllocations(
+                        buildOldestFirstPaymentAllocations(paymentOpenInvoices, paymentForm.amount)
+                      )
+                    }
+                  >
+                    Auto Allocate Oldest
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!Object.keys(paymentAllocations).length}
+                    onClick={() => setPaymentAllocations({})}
+                  >
+                    Clear Allocations
+                  </button>
                 </div>
                 <div className="table-wrap">
                   <table>

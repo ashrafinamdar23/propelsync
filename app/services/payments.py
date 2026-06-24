@@ -1,11 +1,24 @@
 import uuid
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ChartOfAccount, Flat, Invoice, JournalEntry, JournalLine, Owner, Payment, PaymentAllocation, Society, User
-from app.schemas.payment import PaymentCreate, PaymentReverseRequest
+from app.models import (
+    ChartOfAccount,
+    Flat,
+    Invoice,
+    JournalEntry,
+    JournalLine,
+    LateFeeApplication,
+    Owner,
+    Payment,
+    PaymentAllocation,
+    Society,
+    User,
+)
+from app.schemas.payment import PaymentAllocationCreate, PaymentCreate, PaymentReverseRequest
 from app.services.audit import record_audit_log
 from app.services.late_fees import auto_cancel_invalid_unpaid_penalties
 from app.tenants.context import TenantContext
@@ -55,10 +68,20 @@ def post_payment_journal(
     )
     if society is None:
         raise PaymentSocietyNotFoundError("Society not found.")
-    if society.receivable_account_id is None:
+    allocated_amount = money(payment.amount - payment.unapplied_amount)
+    unapplied_amount = money(payment.unapplied_amount)
+    if allocated_amount > Decimal("0.00") and society.receivable_account_id is None:
         raise PaymentJournalPostingError("Configure the society receivable account before recording payments.")
+    if unapplied_amount > Decimal("0.00") and society.member_advance_account_id is None:
+        raise PaymentJournalPostingError(
+            "Configure the society member advance account before recording advance payments."
+        )
 
-    account_ids = [payment.deposit_account_id, society.receivable_account_id]
+    account_ids = [payment.deposit_account_id]
+    if allocated_amount > Decimal("0.00") and society.receivable_account_id is not None:
+        account_ids.append(society.receivable_account_id)
+    if unapplied_amount > Decimal("0.00") and society.member_advance_account_id is not None:
+        account_ids.append(society.member_advance_account_id)
     accounts = {
         account.id: account
         for account in session.scalars(
@@ -66,13 +89,26 @@ def post_payment_journal(
                 ChartOfAccount.id.in_(account_ids),
                 ChartOfAccount.tenant_id == tenant_context.tenant_id,
                 ChartOfAccount.society_id == society_id,
-                ChartOfAccount.account_type == "asset",
                 ChartOfAccount.status == "active",
             )
         )
     }
     if set(account_ids) != set(accounts):
-        raise PaymentJournalPostingError("Payment deposit and receivable accounts must be active asset accounts.")
+        raise PaymentJournalPostingError("Payment posting accounts must be active chart accounts.")
+    if accounts[payment.deposit_account_id].account_type != "asset":
+        raise PaymentJournalPostingError("Payment deposit account must be an active asset account.")
+    if (
+        allocated_amount > Decimal("0.00")
+        and society.receivable_account_id is not None
+        and accounts[society.receivable_account_id].account_type != "asset"
+    ):
+        raise PaymentJournalPostingError("Society receivable account must be an active asset account.")
+    if (
+        unapplied_amount > Decimal("0.00")
+        and society.member_advance_account_id is not None
+        and accounts[society.member_advance_account_id].account_type != "liability"
+    ):
+        raise PaymentJournalPostingError("Society member advance account must be an active liability account.")
 
     journal_entry = JournalEntry(
         tenant_id=tenant_context.tenant_id,
@@ -89,7 +125,6 @@ def post_payment_journal(
     session.flush()
 
     deposit_account = accounts[payment.deposit_account_id]
-    receivable_account = accounts[society.receivable_account_id]
     session.add(
         JournalLine(
             tenant_id=tenant_context.tenant_id,
@@ -102,18 +137,36 @@ def post_payment_journal(
             credit_amount=Decimal("0.00"),
         )
     )
-    session.add(
-        JournalLine(
-            tenant_id=tenant_context.tenant_id,
-            society_id=society_id,
-            journal_entry_id=journal_entry.id,
-            account_id=receivable_account.id,
-            line_number=2,
-            description=f"Receivable settlement: {receivable_account.account_name}",
-            debit_amount=Decimal("0.00"),
-            credit_amount=money(payment.amount),
+    line_number = 2
+    if allocated_amount > Decimal("0.00") and society.receivable_account_id is not None:
+        receivable_account = accounts[society.receivable_account_id]
+        session.add(
+            JournalLine(
+                tenant_id=tenant_context.tenant_id,
+                society_id=society_id,
+                journal_entry_id=journal_entry.id,
+                account_id=receivable_account.id,
+                line_number=line_number,
+                description=f"Receivable settlement: {receivable_account.account_name}",
+                debit_amount=Decimal("0.00"),
+                credit_amount=allocated_amount,
+            )
         )
-    )
+        line_number += 1
+    if unapplied_amount > Decimal("0.00") and society.member_advance_account_id is not None:
+        member_advance_account = accounts[society.member_advance_account_id]
+        session.add(
+            JournalLine(
+                tenant_id=tenant_context.tenant_id,
+                society_id=society_id,
+                journal_entry_id=journal_entry.id,
+                account_id=member_advance_account.id,
+                line_number=line_number,
+                description=f"Member advance: {member_advance_account.account_name}",
+                debit_amount=Decimal("0.00"),
+                credit_amount=unapplied_amount,
+            )
+        )
     payment.journal_entry_id = journal_entry.id
     return journal_entry
 
@@ -225,9 +278,10 @@ def load_allocated_invoices(
     *,
     tenant_context: TenantContext,
     society_id: uuid.UUID,
-    payload: PaymentCreate,
+    flat_id: uuid.UUID,
+    allocations: list[PaymentAllocationCreate],
 ) -> dict[uuid.UUID, Invoice]:
-    invoice_ids = [allocation.invoice_id for allocation in payload.allocations]
+    invoice_ids = [allocation.invoice_id for allocation in allocations]
     if not invoice_ids:
         return {}
     invoices = {
@@ -238,7 +292,7 @@ def load_allocated_invoices(
                 Invoice.id.in_(invoice_ids),
                 Invoice.tenant_id == tenant_context.tenant_id,
                 Invoice.society_id == society_id,
-                Invoice.flat_id == payload.flat_id,
+                Invoice.flat_id == flat_id,
                 Invoice.status.not_in(["cancelled", "paid"]),
             )
             .with_for_update()
@@ -247,6 +301,111 @@ def load_allocated_invoices(
     if set(invoice_ids) != set(invoices):
         raise PaymentAllocationInvalidError("All allocated invoices must be open and belong to the selected flat.")
     return invoices
+
+
+def build_oldest_first_allocations(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID,
+    amount: Decimal,
+    payment_date: date,
+) -> list[PaymentAllocationCreate]:
+    remaining_amount = money(amount)
+    if remaining_amount <= Decimal("0.00"):
+        return []
+
+    open_invoices = list(
+        session.scalars(
+            select(Invoice)
+            .where(
+                Invoice.tenant_id == tenant_context.tenant_id,
+                Invoice.society_id == society_id,
+                Invoice.flat_id == flat_id,
+                Invoice.status.not_in(["cancelled", "paid"]),
+                Invoice.amount_due > 0,
+            )
+            .order_by(Invoice.due_date, Invoice.invoice_date, Invoice.invoice_number)
+            .with_for_update()
+        )
+    )
+
+    if not open_invoices:
+        return []
+
+    open_invoice_ids = {invoice.id for invoice in open_invoices}
+    penalty_applications = {
+        application.penalty_invoice_id: application
+        for application in session.scalars(
+            select(LateFeeApplication).where(
+                LateFeeApplication.tenant_id == tenant_context.tenant_id,
+                LateFeeApplication.society_id == society_id,
+                LateFeeApplication.penalty_invoice_id.in_(open_invoice_ids),
+                LateFeeApplication.status == "active",
+            )
+        )
+    }
+    original_invoices = {invoice.id: invoice for invoice in open_invoices}
+    missing_original_invoice_ids = {
+        application.original_invoice_id
+        for application in penalty_applications.values()
+        if application.original_invoice_id not in original_invoices
+    }
+    if missing_original_invoice_ids:
+        original_invoices.update(
+            {
+                invoice.id: invoice
+                for invoice in session.scalars(
+                    select(Invoice).where(
+                        Invoice.id.in_(missing_original_invoice_ids),
+                        Invoice.tenant_id == tenant_context.tenant_id,
+                        Invoice.society_id == society_id,
+                    )
+                )
+            }
+        )
+
+    allocations: list[PaymentAllocationCreate] = []
+    simulated_allocations: dict[uuid.UUID, Decimal] = {}
+
+    def allocate_invoice(invoice: Invoice) -> None:
+        nonlocal remaining_amount
+        if remaining_amount <= Decimal("0.00"):
+            return
+        allocated_amount = min(remaining_amount, money(invoice.amount_due))
+        allocations.append(
+            PaymentAllocationCreate(
+                invoice_id=invoice.id,
+                allocated_amount=allocated_amount,
+            )
+        )
+        simulated_allocations[invoice.id] = money(
+            simulated_allocations.get(invoice.id, Decimal("0.00")) + allocated_amount
+        )
+        remaining_amount = money(remaining_amount - allocated_amount)
+
+    for invoice in open_invoices:
+        if invoice.id not in penalty_applications:
+            allocate_invoice(invoice)
+
+    for invoice in open_invoices:
+        application = penalty_applications.get(invoice.id)
+        if application is None:
+            continue
+        original_invoice = original_invoices.get(application.original_invoice_id)
+        original_paid_after_this_payment = money(
+            (original_invoice.amount_paid if original_invoice is not None else Decimal("0.00"))
+            + simulated_allocations.get(application.original_invoice_id, Decimal("0.00"))
+        )
+        if (
+            original_invoice is not None
+            and payment_date < application.applied_as_of_date
+            and original_paid_after_this_payment >= original_invoice.total_amount
+        ):
+            continue
+        allocate_invoice(invoice)
+    return allocations
 
 
 def update_invoice_after_allocation(invoice: Invoice, allocated_amount: Decimal) -> None:
@@ -284,14 +443,23 @@ def create_payment(
         society_id=society_id,
         payload=payload,
     )
+    payment_amount = money(payload.amount)
+    allocations = payload.allocations or build_oldest_first_allocations(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        flat_id=payload.flat_id,
+        amount=payment_amount,
+        payment_date=payload.payment_date,
+    )
     invoices = load_allocated_invoices(
         session,
         tenant_context=tenant_context,
         society_id=society_id,
-        payload=payload,
+        flat_id=payload.flat_id,
+        allocations=allocations,
     )
-    total_allocated = money(sum((allocation.allocated_amount for allocation in payload.allocations), Decimal("0.00")))
-    payment_amount = money(payload.amount)
+    total_allocated = money(sum((allocation.allocated_amount for allocation in allocations), Decimal("0.00")))
 
     payment = Payment(
         tenant_id=tenant_context.tenant_id,
@@ -310,7 +478,7 @@ def create_payment(
     session.add(payment)
     session.flush()
 
-    for allocation in payload.allocations:
+    for allocation in allocations:
         allocated_amount = money(allocation.allocated_amount)
         invoice = invoices[allocation.invoice_id]
         update_invoice_after_allocation(invoice, allocated_amount)

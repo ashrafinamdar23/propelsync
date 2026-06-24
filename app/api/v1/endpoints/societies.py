@@ -41,6 +41,7 @@ def society_to_read(society: Society) -> SocietyRead:
         financial_year_start_month=society.financial_year_start_month,
         receivable_account_id=society.receivable_account_id,
         payable_account_id=society.payable_account_id,
+        member_advance_account_id=society.member_advance_account_id,
         status=society.status,
         created_at=society.created_at,
         updated_at=society.updated_at,

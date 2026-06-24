@@ -54,4 +54,10 @@ class Society(UUIDPrimaryKeyMixin, TenantOwnedMixin, TimestampMixin, Base):
         nullable=True,
         index=True,
     )
+    member_advance_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chart_of_accounts.id"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")

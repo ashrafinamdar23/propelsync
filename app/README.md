@@ -527,9 +527,22 @@ Payments record member collections against flats. A payment can allocate to mult
 and invoices can receive multiple payments over time. Payment creation updates each allocated
 invoice's `amount_paid`, `amount_due`, and status in the same transaction.
 
+If no allocation rows are supplied, payment creation automatically allocates the amount oldest-first
+against the selected flat's open invoices by due date, then invoice date, then invoice number. The
+frontend pre-fills the same oldest-first allocation but still allows society admins to edit amounts
+against specific invoices before submitting. If there are no open invoices, or the payment amount is
+greater than the allocated invoice amount, the difference remains as `unapplied_amount`.
+
+Backdated payments also revalidate active penalty applications for the original invoices they settle.
+Future penalty invoices that become invalid because the original invoice is fully paid before the
+penalty application date are not auto-allocated and are eligible for the existing auto-cancellation
+flow.
+
 Payment creation posts a linked journal entry in the same transaction. The journal debits the
-selected deposit account and credits the society receivable account. Payment creation fails if the
-deposit account is missing/inactive or the society receivable account is not configured.
+selected deposit account for the full payment amount, credits the society receivable account for
+allocated invoice settlement, and credits the society member advance account for any unapplied
+amount. Payment creation fails if the deposit account is missing/inactive, if receivable is missing
+for allocated payments, or if member advance is missing for advance payments.
 
 MVP payment modes are:
 
@@ -542,10 +555,9 @@ card
 other
 ```
 
-If a payment amount is greater than the allocated invoice amount, the difference is stored as
-`unapplied_amount`. Payment reversal marks the payment and active allocations as reversed, restores
+Payment reversal marks the payment and active allocations as reversed, restores
 allocated invoice balances, marks the linked payment journal entry as `reversed`, and records the
-reversal reason in the audit log. A full advance-balance ledger remains a later slice.
+reversal reason in the audit log.
 
 ## Outstanding APIs
 

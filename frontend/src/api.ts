@@ -114,6 +114,7 @@ export type Society = {
   financial_year_start_month: number;
   receivable_account_id: string | null;
   payable_account_id: string | null;
+  member_advance_account_id: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -134,6 +135,7 @@ export type SocietyPayload = {
   financial_year_start_month: number;
   receivable_account_id?: string | null;
   payable_account_id?: string | null;
+  member_advance_account_id?: string | null;
 };
 
 export type Building = {

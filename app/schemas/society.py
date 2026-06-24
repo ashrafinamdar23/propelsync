@@ -19,6 +19,7 @@ class SocietyBase(BaseModel):
     financial_year_start_month: int = Field(default=4, ge=1, le=12)
     receivable_account_id: uuid.UUID | None = None
     payable_account_id: uuid.UUID | None = None
+    member_advance_account_id: uuid.UUID | None = None
 
 
 class SocietyCreate(SocietyBase):
