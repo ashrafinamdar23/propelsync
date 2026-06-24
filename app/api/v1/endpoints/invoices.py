@@ -7,7 +7,15 @@ from sqlalchemy.orm import Session
 
 from app.db.deps import get_db
 from app.models import Invoice
-from app.schemas.invoice import InvoiceCancelRequest, InvoiceDetailRead, InvoiceLineItemRead, InvoiceRead, ManualInvoiceCreate
+from app.schemas.invoice import (
+    InvoiceBulkCancelRequest,
+    InvoiceBulkCancelResponse,
+    InvoiceCancelRequest,
+    InvoiceDetailRead,
+    InvoiceLineItemRead,
+    InvoiceRead,
+    ManualInvoiceCreate,
+)
 from app.schemas.invoice_generation import (
     InvoiceGenerationConfirmResponse,
     InvoiceGenerationPreviewResponse,
@@ -21,6 +29,7 @@ from app.services.invoices import (
     InvoiceNotFoundError,
     InvoiceSocietyNotFoundError,
     ManualInvoiceReferenceInvalidError,
+    bulk_cancel_invoices,
     cancel_invoice,
     confirm_invoice_generation,
     create_manual_invoice,
@@ -87,6 +96,23 @@ def create_manual_society_invoice(
     except (ManualInvoiceReferenceInvalidError, InvoiceJournalPostingError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return invoice_to_read(invoice)
+
+
+@router.post("/bulk-cancel", response_model=InvoiceBulkCancelResponse)
+def bulk_cancel_society_invoices(
+    society_id: uuid.UUID,
+    payload: InvoiceBulkCancelRequest,
+    tenant_context: Annotated[TenantContext, Depends(require_society_admin_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> InvoiceBulkCancelResponse:
+    return bulk_cancel_invoices(
+        db,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        invoice_ids=payload.invoice_ids,
+        reason=payload.reason,
+        actor=tenant_context.user,
+    )
 
 
 @router.post("/{invoice_id}/cancel", response_model=InvoiceRead)

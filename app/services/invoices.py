@@ -7,19 +7,22 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     BillingRule,
+    BillingRuleLateFeeRule,
     ChargeType,
     ChartOfAccount,
     Flat,
     FlatOwnership,
     Invoice,
+    InvoiceLateFeeRule,
     InvoiceLineItem,
     JournalEntry,
     JournalLine,
+    LateFeeRule,
     Owner,
     Society,
     User,
 )
-from app.schemas.invoice import ManualInvoiceCreate
+from app.schemas.invoice import InvoiceBulkCancelResponse, InvoiceBulkCancelResult, ManualInvoiceCreate
 from app.schemas.invoice_generation import (
     InvoiceGenerationConfirmResponse,
     InvoiceGenerationLinePreview,
@@ -411,6 +414,94 @@ def build_invoice_generation_preview(
     )
 
 
+def validate_late_fee_rule_ids(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    late_fee_rule_ids: list[uuid.UUID],
+) -> None:
+    if not late_fee_rule_ids:
+        return
+    if len(set(late_fee_rule_ids)) != len(late_fee_rule_ids):
+        raise ManualInvoiceReferenceInvalidError("Penalty rules cannot contain duplicates.")
+    found_rule_ids = set(
+        session.scalars(
+            select(LateFeeRule.id).where(
+                LateFeeRule.id.in_(late_fee_rule_ids),
+                LateFeeRule.tenant_id == tenant_context.tenant_id,
+                LateFeeRule.society_id == society_id,
+                LateFeeRule.status == "active",
+            )
+        )
+    )
+    if found_rule_ids != set(late_fee_rule_ids):
+        raise ManualInvoiceReferenceInvalidError("All penalty rules must be active and belong to this society.")
+
+
+def snapshot_invoice_late_fee_rules(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    invoice: Invoice,
+    billing_rule_ids: set[uuid.UUID] | None = None,
+    manual_late_fee_rule_ids: list[uuid.UUID] | None = None,
+) -> None:
+    snapshot_rows: list[tuple[uuid.UUID, int, str]] = []
+    seen_rule_ids: set[uuid.UUID] = set()
+
+    if billing_rule_ids:
+        mappings = list(
+            session.scalars(
+                select(BillingRuleLateFeeRule)
+                .where(
+                    BillingRuleLateFeeRule.tenant_id == tenant_context.tenant_id,
+                    BillingRuleLateFeeRule.society_id == society_id,
+                    BillingRuleLateFeeRule.billing_rule_id.in_(billing_rule_ids),
+                    BillingRuleLateFeeRule.status == "active",
+                    BillingRuleLateFeeRule.effective_from <= invoice.invoice_date,
+                    (
+                        BillingRuleLateFeeRule.effective_to.is_(None)
+                        | (BillingRuleLateFeeRule.effective_to >= invoice.invoice_date)
+                    ),
+                )
+                .order_by(BillingRuleLateFeeRule.priority)
+            )
+        )
+        for mapping in mappings:
+            if mapping.late_fee_rule_id in seen_rule_ids:
+                continue
+            seen_rule_ids.add(mapping.late_fee_rule_id)
+            snapshot_rows.append((mapping.late_fee_rule_id, mapping.priority, "billing_rule"))
+
+    if manual_late_fee_rule_ids:
+        validate_late_fee_rule_ids(
+            session,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            late_fee_rule_ids=manual_late_fee_rule_ids,
+        )
+        for priority, late_fee_rule_id in enumerate(manual_late_fee_rule_ids):
+            if late_fee_rule_id in seen_rule_ids:
+                continue
+            seen_rule_ids.add(late_fee_rule_id)
+            snapshot_rows.append((late_fee_rule_id, priority, "manual_invoice"))
+
+    for late_fee_rule_id, priority, source_type in snapshot_rows:
+        session.add(
+            InvoiceLateFeeRule(
+                tenant_id=tenant_context.tenant_id,
+                society_id=society_id,
+                invoice_id=invoice.id,
+                late_fee_rule_id=late_fee_rule_id,
+                priority=priority,
+                source_type=source_type,
+                status="active",
+            )
+        )
+
+
 def preview_invoice_generation(
     session: Session,
     *,
@@ -495,6 +586,15 @@ def confirm_invoice_generation(
             )
             session.add(invoice_line)
             invoice_lines.append(invoice_line)
+        snapshot_invoice_late_fee_rules(
+            session,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            invoice=invoice,
+            billing_rule_ids={
+                line.billing_rule_id for line in invoice_lines if line.billing_rule_id is not None
+            },
+        )
         post_invoice_journal(
             session,
             tenant_context=tenant_context,
@@ -601,6 +701,12 @@ def ensure_manual_invoice_references(
     )
     if charge_type_ids != active_charge_type_ids:
         raise ManualInvoiceReferenceInvalidError("All charge types must be active and belong to this society.")
+    validate_late_fee_rule_ids(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        late_fee_rule_ids=payload.late_fee_rule_ids,
+    )
 
     return flat, owner_id
 
@@ -664,6 +770,13 @@ def create_manual_invoice(
         session.add(invoice_line)
         invoice_lines.append(invoice_line)
 
+    snapshot_invoice_late_fee_rules(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        invoice=invoice,
+        manual_late_fee_rule_ids=payload.late_fee_rule_ids,
+    )
     post_invoice_journal(
         session,
         tenant_context=tenant_context,
@@ -710,6 +823,16 @@ def cancel_invoice(
     invoice.status = "cancelled"
     invoice.amount_due = Decimal("0.00")
     invoice.notes = f"{invoice.notes}\nCancellation reason: {reason}" if invoice.notes else f"Cancellation reason: {reason}"
+    if invoice.journal_entry_id is not None:
+        journal_entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.id == invoice.journal_entry_id,
+                JournalEntry.tenant_id == tenant_context.tenant_id,
+                JournalEntry.society_id == society_id,
+            )
+        )
+        if journal_entry is not None:
+            journal_entry.status = "reversed"
     record_audit_log(
         session,
         action="invoice.cancelled",
@@ -723,6 +846,65 @@ def cancel_invoice(
     session.commit()
     session.refresh(invoice)
     return invoice
+
+
+def bulk_cancel_invoices(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    invoice_ids: list[uuid.UUID],
+    reason: str,
+    actor: User,
+) -> InvoiceBulkCancelResponse:
+    results: list[InvoiceBulkCancelResult] = []
+    seen_invoice_ids: set[uuid.UUID] = set()
+
+    for invoice_id in invoice_ids:
+        if invoice_id in seen_invoice_ids:
+            results.append(
+                InvoiceBulkCancelResult(
+                    invoice_id=invoice_id,
+                    status="failed",
+                    error="Duplicate invoice selected.",
+                )
+            )
+            continue
+        seen_invoice_ids.add(invoice_id)
+        try:
+            invoice = cancel_invoice(
+                session,
+                tenant_context=tenant_context,
+                society_id=society_id,
+                invoice_id=invoice_id,
+                reason=reason,
+                actor=actor,
+            )
+        except (InvoiceNotFoundError, InvoiceCancellationInvalidError) as exc:
+            session.rollback()
+            results.append(
+                InvoiceBulkCancelResult(
+                    invoice_id=invoice_id,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
+            continue
+        results.append(
+            InvoiceBulkCancelResult(
+                invoice_id=invoice.id,
+                invoice_number=invoice.invoice_number,
+                status="cancelled",
+            )
+        )
+
+    cancelled_count = sum(1 for result in results if result.status == "cancelled")
+    return InvoiceBulkCancelResponse(
+        requested_count=len(invoice_ids),
+        cancelled_count=cancelled_count,
+        failed_count=len(results) - cancelled_count,
+        results=results,
+    )
 
 
 def get_invoice_or_raise(

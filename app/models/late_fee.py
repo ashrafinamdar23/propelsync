@@ -103,3 +103,82 @@ class LateFeeApplication(UUIDPrimaryKeyMixin, TenantOwnedMixin, TimestampMixin, 
     applied_as_of_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     penalty_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+
+
+class BillingRuleLateFeeRule(UUIDPrimaryKeyMixin, TenantOwnedMixin, TimestampMixin, Base):
+    __tablename__ = "billing_rule_late_fee_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "society_id",
+            "billing_rule_id",
+            "late_fee_rule_id",
+            name="uq_billing_rule_late_fee_rule",
+        ),
+        CheckConstraint("priority >= 0", name="ck_billing_rule_late_fee_rules_priority"),
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_billing_rule_late_fee_rules_status"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_billing_rule_late_fee_rules_dates",
+        ),
+    )
+
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("societies.id"),
+        nullable=False,
+        index=True,
+    )
+    billing_rule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("billing_rules.id"),
+        nullable=False,
+        index=True,
+    )
+    late_fee_rule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("late_fee_rules.id"),
+        nullable=False,
+        index=True,
+    )
+    priority: Mapped[int] = mapped_column(nullable=False, default=0)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+
+
+class InvoiceLateFeeRule(UUIDPrimaryKeyMixin, TenantOwnedMixin, TimestampMixin, Base):
+    __tablename__ = "invoice_late_fee_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "society_id",
+            "invoice_id",
+            "late_fee_rule_id",
+            name="uq_invoice_late_fee_rule",
+        ),
+        CheckConstraint("priority >= 0", name="ck_invoice_late_fee_rules_priority"),
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_invoice_late_fee_rules_status"),
+    )
+
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("societies.id"),
+        nullable=False,
+        index=True,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id"),
+        nullable=False,
+        index=True,
+    )
+    late_fee_rule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("late_fee_rules.id"),
+        nullable=False,
+        index=True,
+    )
+    priority: Mapped[int] = mapped_column(nullable=False, default=0)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False, default="billing_rule")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")

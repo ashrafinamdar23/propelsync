@@ -23,6 +23,7 @@ class BillingRuleBase(BaseModel):
     effective_from: date
     effective_to: date | None = None
     description: str | None = None
+    late_fee_rule_ids: list[uuid.UUID] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_rule_shape(self) -> "BillingRuleBase":

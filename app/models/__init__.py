@@ -14,7 +14,7 @@ from app.models.flat_ownership import FlatOwnership
 from app.models.flat_type import FlatType
 from app.models.invoice import Invoice, InvoiceLineItem
 from app.models.journal import JournalEntry, JournalLine
-from app.models.late_fee import LateFeeApplication, LateFeeRule
+from app.models.late_fee import BillingRuleLateFeeRule, InvoiceLateFeeRule, LateFeeApplication, LateFeeRule
 from app.models.lease_agreement import LeaseAgreement
 from app.models.membership import SocietyMembership, TenantMembership
 from app.models.owner import Owner
@@ -31,6 +31,7 @@ __all__ = [
     "AuditLog",
     "AccountTransfer",
     "BillingRule",
+    "BillingRuleLateFeeRule",
     "Building",
     "BuildingFloor",
     "ChartOfAccount",
@@ -45,6 +46,7 @@ __all__ = [
     "FlatType",
     "Invoice",
     "InvoiceLineItem",
+    "InvoiceLateFeeRule",
     "JournalEntry",
     "JournalLine",
     "LateFeeApplication",

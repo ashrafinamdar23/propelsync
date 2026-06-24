@@ -20,6 +20,7 @@ class ManualInvoiceCreate(BaseModel):
     billing_period_start: date
     billing_period_end: date
     notes: str | None = None
+    late_fee_rule_ids: list[uuid.UUID] = Field(default_factory=list)
     line_items: list[ManualInvoiceLineCreate] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -33,6 +34,25 @@ class ManualInvoiceCreate(BaseModel):
 
 class InvoiceCancelRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+
+
+class InvoiceBulkCancelRequest(BaseModel):
+    invoice_ids: list[uuid.UUID] = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class InvoiceBulkCancelResult(BaseModel):
+    invoice_id: uuid.UUID
+    status: str
+    invoice_number: str | None = None
+    error: str | None = None
+
+
+class InvoiceBulkCancelResponse(BaseModel):
+    requested_count: int
+    cancelled_count: int
+    failed_count: int
+    results: list[InvoiceBulkCancelResult]
 
 
 class InvoiceLineItemRead(BaseModel):

@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BillingRule, Building, ChargeType, FlatType, Society, User, Wing
+from app.models import BillingRule, BillingRuleLateFeeRule, Building, ChargeType, FlatType, LateFeeRule, Society, User, Wing
 from app.schemas.billing_rule import BillingRuleCreate, BillingRuleUpdate
 from app.services.audit import record_audit_log
 from app.tenants.context import TenantContext
@@ -115,6 +115,97 @@ def ensure_references_valid(
         if flat_type is None:
             raise BillingRuleReferenceInvalidError("Flat type must be active and belong to this society.")
 
+    ensure_late_fee_rules_valid(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        late_fee_rule_ids=payload.late_fee_rule_ids,
+    )
+
+
+def ensure_late_fee_rules_valid(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    late_fee_rule_ids: list[uuid.UUID],
+) -> None:
+    if not late_fee_rule_ids:
+        return
+    if len(set(late_fee_rule_ids)) != len(late_fee_rule_ids):
+        raise BillingRuleReferenceInvalidError("Penalty rules cannot contain duplicates.")
+    found_rule_ids = set(
+        session.scalars(
+            select(LateFeeRule.id).where(
+                LateFeeRule.id.in_(late_fee_rule_ids),
+                LateFeeRule.tenant_id == tenant_context.tenant_id,
+                LateFeeRule.society_id == society_id,
+                LateFeeRule.status == "active",
+            )
+        )
+    )
+    if found_rule_ids != set(late_fee_rule_ids):
+        raise BillingRuleReferenceInvalidError("All penalty rules must be active and belong to this society.")
+
+
+def replace_billing_rule_late_fee_rules(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    rule: BillingRule,
+    late_fee_rule_ids: list[uuid.UUID],
+) -> None:
+    existing = list(
+        session.scalars(
+            select(BillingRuleLateFeeRule).where(
+                BillingRuleLateFeeRule.tenant_id == tenant_context.tenant_id,
+                BillingRuleLateFeeRule.society_id == society_id,
+                BillingRuleLateFeeRule.billing_rule_id == rule.id,
+            )
+        )
+    )
+    for row in existing:
+        session.delete(row)
+    if existing:
+        session.flush()
+    for priority, late_fee_rule_id in enumerate(late_fee_rule_ids):
+        session.add(
+            BillingRuleLateFeeRule(
+                tenant_id=tenant_context.tenant_id,
+                society_id=society_id,
+                billing_rule_id=rule.id,
+                late_fee_rule_id=late_fee_rule_id,
+                priority=priority,
+                effective_from=rule.effective_from,
+                effective_to=rule.effective_to,
+                status="active",
+            )
+        )
+
+
+def list_billing_rule_late_fee_rule_ids(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    rows = list(
+        session.scalars(
+            select(BillingRuleLateFeeRule)
+            .where(
+                BillingRuleLateFeeRule.tenant_id == tenant_context.tenant_id,
+                BillingRuleLateFeeRule.society_id == society_id,
+                BillingRuleLateFeeRule.status == "active",
+            )
+            .order_by(BillingRuleLateFeeRule.billing_rule_id, BillingRuleLateFeeRule.priority)
+        )
+    )
+    rule_ids: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for row in rows:
+        rule_ids.setdefault(row.billing_rule_id, []).append(row.late_fee_rule_id)
+    return rule_ids
+
 
 def list_billing_rules(
     session: Session,
@@ -194,6 +285,13 @@ def create_billing_rule(
     )
     session.add(rule)
     session.flush()
+    replace_billing_rule_late_fee_rules(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        rule=rule,
+        late_fee_rule_ids=payload.late_fee_rule_ids,
+    )
     record_audit_log(
         session,
         action="billing_rule.created",
@@ -249,6 +347,13 @@ def update_billing_rule(
     rule.effective_from = payload.effective_from
     rule.effective_to = payload.effective_to
     rule.description = payload.description
+    replace_billing_rule_late_fee_rules(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        rule=rule,
+        late_fee_rule_ids=payload.late_fee_rule_ids,
+    )
     record_audit_log(
         session,
         action="billing_rule.updated",

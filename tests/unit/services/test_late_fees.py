@@ -145,6 +145,27 @@ def test_late_fee_preview_marks_overdue_invoice_valid() -> None:
     assert preview.rows[0].applied_as_of_date == date(2026, 4, 16)
 
 
+def test_late_fee_preview_requires_invoice_level_penalty_assignment_when_provided() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(tenant_id=tenant_id, society_id=society_id)
+    invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 10))
+    flat = build_flat(tenant_id=tenant_id, society_id=society_id, flat_id=invoice.flat_id)
+
+    preview = build_late_fee_preview(
+        payload=LateFeePreviewRequest(as_of_date=date(2026, 4, 20), late_fee_rule_ids=[rule.id]),
+        rules=[rule],
+        invoices=[invoice],
+        flats_by_id={flat.id: flat},
+        applications_by_invoice_rule={},
+        penalty_invoice_ids=set(),
+        invoice_late_fee_rule_ids={invoice.id: set()},
+    )
+
+    assert preview.valid_rows == 0
+    assert preview.rows == []
+
+
 def test_late_fee_preview_skips_invoice_inside_grace_period() -> None:
     tenant_id = uuid.uuid4()
     society_id = uuid.uuid4()

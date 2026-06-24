@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     expense_categories,
     expense_payments,
     flat_ownerships,
+    flat_ledgers,
     flat_types,
     flats,
     health,
@@ -53,6 +54,7 @@ api_router.include_router(chart_of_accounts.router, tags=["chart-of-accounts"])
 api_router.include_router(building_floors.router, tags=["building-floors"])
 api_router.include_router(wings.router, tags=["wings"])
 api_router.include_router(flats.router, tags=["flats"])
+api_router.include_router(flat_ledgers.router, tags=["flat-ledgers"])
 api_router.include_router(flat_types.router, tags=["flat-types"])
 api_router.include_router(charge_types.router, tags=["charge-types"])
 api_router.include_router(billing_rules.router, tags=["billing-rules"])

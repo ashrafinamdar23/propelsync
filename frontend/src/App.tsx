@@ -20,6 +20,7 @@ import {
   activateWing,
   approveExpense,
   applyLateFees,
+  bulkCancelInvoices,
   cancelInvoice,
   cancelExpense,
   closeFlatOwnership,
@@ -62,6 +63,7 @@ import {
   getCollectionReport,
   getDefaulterReport,
   getExpenseOperationalReport,
+  getFlatLedger,
   getIncomeExpenseReport,
   getInvoice,
   getInvoiceSequence,
@@ -172,6 +174,7 @@ import {
   type Flat,
   type FlatImportPreviewResponse,
   type FlatImportRowInput,
+  type FlatLedger,
   type FlatOwnership,
   type FlatOwnershipPayload,
   type FlatPayload,
@@ -253,6 +256,7 @@ type Workspace =
   | "vendors"
   | "wings"
   | "flats"
+  | "flatLedgers"
   | "owners"
   | "ownerships"
   | "residents"
@@ -403,6 +407,13 @@ const accountLedgerFilterDefaults = {
   date_to: ""
 };
 
+const flatLedgerFilterDefaults = {
+  building_id: "",
+  flat_id: "",
+  date_from: "",
+  date_to: ""
+};
+
 const trialBalanceFilterDefaults = {
   as_of_date: todayIsoDate()
 };
@@ -433,7 +444,8 @@ const billingRuleFormDefaults = {
   flat_type_id: "",
   effective_from: "",
   effective_to: "",
-  description: ""
+  description: "",
+  late_fee_rule_ids: [] as string[]
 };
 
 const lateFeeRuleFormDefaults = {
@@ -479,7 +491,8 @@ const manualInvoiceFormDefaults = {
   due_date: "",
   billing_period_start: "",
   billing_period_end: "",
-  notes: ""
+  notes: "",
+  late_fee_rule_ids: [] as string[]
 };
 
 const invoiceFilterDefaults = {
@@ -945,6 +958,7 @@ function App() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
   const [invoiceFilters, setInvoiceFilters] = useState(invoiceFilterDefaults);
   const [invoiceGenerationForm, setInvoiceGenerationForm] = useState<InvoiceGenerationPayload>(
@@ -997,6 +1011,9 @@ function App() {
   const [accountLedgerFilters, setAccountLedgerFilters] = useState(accountLedgerFilterDefaults);
   const [accountLedger, setAccountLedger] = useState<AccountLedger | null>(null);
   const [isLoadingAccountLedger, setIsLoadingAccountLedger] = useState(false);
+  const [flatLedgerFilters, setFlatLedgerFilters] = useState(flatLedgerFilterDefaults);
+  const [flatLedger, setFlatLedger] = useState<FlatLedger | null>(null);
+  const [isLoadingFlatLedger, setIsLoadingFlatLedger] = useState(false);
   const [trialBalanceFilters, setTrialBalanceFilters] = useState(trialBalanceFilterDefaults);
   const [trialBalance, setTrialBalance] = useState<TrialBalance | null>(null);
   const [isLoadingTrialBalance, setIsLoadingTrialBalance] = useState(false);
@@ -2134,6 +2151,33 @@ function App() {
     }
   }, [accountLedgerFilters, selectedSocietyId, selectedTenantId, token]);
 
+  const refreshFlatLedger = useCallback(async (
+    tenantId = selectedTenantId,
+    societyId = selectedSocietyId,
+    authToken = token,
+    filters = flatLedgerFilters
+  ) => {
+    if (!tenantId || !societyId || !filters.flat_id) {
+      setFlatLedger(null);
+      return;
+    }
+
+    setIsLoadingFlatLedger(true);
+    setError("");
+    try {
+      setFlatLedger(
+        await getFlatLedger(authToken, tenantId, societyId, filters.flat_id, {
+          date_from: filters.date_from || undefined,
+          date_to: filters.date_to || undefined
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load flat ledger.");
+    } finally {
+      setIsLoadingFlatLedger(false);
+    }
+  }, [flatLedgerFilters, selectedSocietyId, selectedTenantId, token]);
+
   const refreshTrialBalance = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
@@ -2450,6 +2494,7 @@ function App() {
       setSelectedOpeningBalanceDetail(null);
       setAccountTransfers([]);
       setAccountLedger(null);
+      setFlatLedger(null);
       setTrialBalance(null);
       setIncomeExpenseReport(null);
       setBalanceSheetReport(null);
@@ -2501,6 +2546,8 @@ function App() {
   useEffect(() => {
     setAccountLedger(null);
     setAccountLedgerFilters(accountLedgerFilterDefaults);
+    setFlatLedger(null);
+    setFlatLedgerFilters(flatLedgerFilterDefaults);
     setTrialBalance(null);
     setTrialBalanceFilters(trialBalanceFilterDefaults);
     setIncomeExpenseReport(null);
@@ -2927,7 +2974,8 @@ function App() {
       flat_type_id: billingRuleForm.flat_type_id || null,
       effective_from: billingRuleForm.effective_from,
       effective_to: nullableText(billingRuleForm.effective_to),
-      description: nullableText(billingRuleForm.description)
+      description: nullableText(billingRuleForm.description),
+      late_fee_rule_ids: billingRuleForm.late_fee_rule_ids
     };
 
     setIsSaving(true);
@@ -3279,6 +3327,7 @@ function App() {
       billing_period_start: manualInvoiceForm.billing_period_start,
       billing_period_end: manualInvoiceForm.billing_period_end,
       notes: nullableText(manualInvoiceForm.notes),
+      late_fee_rule_ids: manualInvoiceForm.late_fee_rule_ids,
       line_items: [
         {
           charge_type_id: manualInvoiceForm.charge_type_id,
@@ -3301,7 +3350,8 @@ function App() {
         invoice_date: todayIsoDate(),
         due_date: todayIsoDate(),
         billing_period_start: todayIsoDate(),
-        billing_period_end: todayIsoDate()
+        billing_period_end: todayIsoDate(),
+        late_fee_rule_ids: []
       });
       setSelectedInvoiceId(invoice.id);
       setNotice(`Manual invoice ${invoice.invoice_number} created.`);
@@ -3345,6 +3395,48 @@ function App() {
     });
   }
 
+  function handleBulkInvoiceCancel() {
+    if (!selectedTenantId || !selectedSocietyId) {
+      return;
+    }
+    const cancellableInvoiceIds = selectedInvoiceIds.filter((invoiceId) => {
+      const invoice = invoices.find((item) => item.id === invoiceId);
+      return invoice && invoice.status !== "cancelled" && Number(invoice.amount_paid) === 0;
+    });
+    if (!cancellableInvoiceIds.length) {
+      setError("Select at least one unpaid, non-cancelled invoice.");
+      return;
+    }
+
+    openReasonDialog({
+      title: "Cancel Selected Invoices",
+      description: `Record why ${cancellableInvoiceIds.length} selected invoices are being cancelled.`,
+      reasonLabel: "Bulk cancellation reason",
+      confirmLabel: "Cancel Selected",
+      errorMessage: "Unable to cancel selected invoices.",
+      onConfirm: async (reason) => {
+        const authToken = await refreshToken();
+        const response = await bulkCancelInvoices(
+          authToken,
+          selectedTenantId,
+          selectedSocietyId,
+          cancellableInvoiceIds,
+          reason
+        );
+        setSelectedInvoiceIds([]);
+        setNotice(
+          `Bulk cancellation completed. ${response.cancelled_count} cancelled, ${response.failed_count} failed.`
+        );
+        await refreshInvoices(selectedTenantId, selectedSocietyId, authToken);
+        await refreshOutstanding(selectedTenantId, selectedSocietyId, authToken);
+        if (selectedInvoiceId && cancellableInvoiceIds.includes(selectedInvoiceId)) {
+          setSelectedInvoiceId("");
+          setSelectedInvoiceDetail(null);
+        }
+      }
+    });
+  }
+
   async function handlePaymentBuildingChange(buildingId: string) {
     setPaymentForm((current) => ({ ...current, building_id: buildingId, flat_id: "" }));
     setPaymentAllocations({});
@@ -3377,6 +3469,37 @@ function App() {
         return left.invoice_number.localeCompare(right.invoice_number);
       });
     setPaymentAllocations(buildOldestFirstPaymentAllocations(openInvoicesForFlat, paymentForm.amount));
+  }
+
+  function startInvoicePaymentCollection(invoice: Invoice) {
+    const flat = flats.find((item) => item.id === invoice.flat_id);
+    if (!flat) {
+      setError("Unable to collect payment because the invoice flat is not loaded.");
+      return;
+    }
+    if (invoice.status === "paid" || invoice.status === "cancelled" || Number(invoice.amount_due) <= 0) {
+      setError("Only open invoices with a balance can be collected.");
+      return;
+    }
+
+    setPaymentForm((current) => ({
+      ...paymentFormDefaults,
+      building_id: flat.building_id,
+      flat_id: invoice.flat_id,
+      deposit_account_id: current.deposit_account_id,
+      payment_date: todayIsoDate(),
+      amount: invoice.amount_due,
+      payment_mode: current.payment_mode || paymentFormDefaults.payment_mode,
+      reference_number: "",
+      notes: `Collection for ${invoice.invoice_number}`
+    }));
+    setPaymentAllocations({ [invoice.id]: invoice.amount_due });
+    setSelectedInvoiceId("");
+    setSelectedInvoiceDetail(null);
+    setWorkspace("payments");
+    setFormWorkspace(null);
+    setNotice(`Collecting payment for ${invoice.invoice_number}.`);
+    setError("");
   }
 
   async function handlePaymentSubmit(event: FormEvent<HTMLFormElement>) {
@@ -3745,6 +3868,29 @@ function App() {
 
     const authToken = await refreshToken();
     await refreshAccountLedger(selectedTenantId, selectedSocietyId, authToken, accountLedgerFilters);
+  }
+
+  async function handleFlatLedgerSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTenantId || !selectedSocietyId) {
+      setError("Select a tenant and society before loading a flat ledger.");
+      return;
+    }
+    if (!flatLedgerFilters.flat_id) {
+      setError("Select a flat before loading the ledger.");
+      return;
+    }
+    if (
+      flatLedgerFilters.date_from &&
+      flatLedgerFilters.date_to &&
+      flatLedgerFilters.date_from > flatLedgerFilters.date_to
+    ) {
+      setError("From date cannot be after to date.");
+      return;
+    }
+
+    const authToken = await refreshToken();
+    await refreshFlatLedger(selectedTenantId, selectedSocietyId, authToken, flatLedgerFilters);
   }
 
   function handleReverseJournal(entry: JournalEntry) {
@@ -4642,7 +4788,8 @@ function App() {
       flat_type_id: rule.flat_type_id ?? "",
       effective_from: rule.effective_from,
       effective_to: rule.effective_to ?? "",
-      description: rule.description ?? ""
+      description: rule.description ?? "",
+      late_fee_rule_ids: rule.late_fee_rule_ids ?? []
     });
   }
 
@@ -6011,6 +6158,10 @@ function App() {
       void refreshAccountLedger(selectedTenantId, selectedSocietyId);
       return;
     }
+    if (workspace === "flatLedgers") {
+      void refreshFlatLedger(selectedTenantId, selectedSocietyId);
+      return;
+    }
     if (workspace === "trialBalance") {
       void refreshTrialBalance(selectedTenantId, selectedSocietyId);
       return;
@@ -6343,6 +6494,16 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item ${workspace === "flatLedgers" ? "active" : ""}`}
+                  disabled={!selectedSocietyId}
+                  onClick={() => setWorkspace("flatLedgers")}
+                  title="Flat Ledger"
+                >
+                  <span className="nav-icon">G</span>
+                  <span className="nav-text">Flat Ledger</span>
+                </button>
+                <button
+                  type="button"
                   className={`nav-item ${workspace === "residents" ? "active" : ""}`}
                   disabled={!selectedFlatId}
                   onClick={() => setWorkspace("residents")}
@@ -6667,6 +6828,8 @@ function App() {
                           ? "Bank & Cash Accounts"
                         : workspace === "accountLedgers"
                           ? "Account Ledger"
+                        : workspace === "flatLedgers"
+                          ? "Flat Ledger"
                           : workspace === "openingBalances"
                           ? "Opening Balances"
                         : workspace === "trialBalance"
@@ -8890,6 +9053,170 @@ function App() {
                 )}
               </section>
             </section>
+          ) : workspace === "flatLedgers" ? (
+            <section className="workspace registry-only">
+              <section className="data-panel">
+                <form className="filter-bar" onSubmit={handleFlatLedgerSubmit}>
+                  <label>
+                    Building
+                    <select
+                      required
+                      value={flatLedgerFilters.building_id}
+                      onChange={(event) => {
+                        const buildingId = event.target.value;
+                        setFlatLedger(null);
+                        setFlatLedgerFilters({
+                          ...flatLedgerFilters,
+                          building_id: buildingId,
+                          flat_id: ""
+                        });
+                        if (selectedTenantId && selectedSocietyId && buildingId) {
+                          void refreshFlats(selectedTenantId, selectedSocietyId, buildingId);
+                        }
+                      }}
+                    >
+                      <option value="">Select building</option>
+                      {activeBuildings.map((building) => (
+                        <option key={building.id} value={building.id}>
+                          {building.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Flat
+                    <select
+                      required
+                      disabled={!flatLedgerFilters.building_id}
+                      value={flatLedgerFilters.flat_id}
+                      onChange={(event) => {
+                        setFlatLedger(null);
+                        setFlatLedgerFilters({
+                          ...flatLedgerFilters,
+                          flat_id: event.target.value
+                        });
+                      }}
+                    >
+                      <option value="">Select flat</option>
+                      {flats
+                        .filter((flat) => flat.building_id === flatLedgerFilters.building_id)
+                        .map((flat) => (
+                          <option key={flat.id} value={flat.id}>
+                            {flat.flat_number}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    From
+                    <input
+                      type="date"
+                      value={flatLedgerFilters.date_from}
+                      onChange={(event) =>
+                        setFlatLedgerFilters({
+                          ...flatLedgerFilters,
+                          date_from: event.target.value
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    To
+                    <input
+                      type="date"
+                      value={flatLedgerFilters.date_to}
+                      onChange={(event) =>
+                        setFlatLedgerFilters({
+                          ...flatLedgerFilters,
+                          date_to: event.target.value
+                        })
+                      }
+                    />
+                  </label>
+                  <button type="submit" disabled={isLoadingFlatLedger || !flatLedgerFilters.flat_id}>
+                    {isLoadingFlatLedger ? "Loading" : "Apply"}
+                  </button>
+                </form>
+              </section>
+
+              <section className="data-panel">
+                <div className="section-heading">
+                  <h2>{flatLedger ? `Flat ${flatLedger.flat_number} Ledger` : "Flat Ledger"}</h2>
+                  <span className="record-count">
+                    {isLoadingFlatLedger
+                      ? "Loading"
+                      : flatLedger
+                        ? `${flatLedger.lines.length} records`
+                        : "No flat selected"}
+                  </span>
+                </div>
+
+                {flatLedger ? (
+                  <>
+                    <div className="metrics-grid compact-metrics">
+                      <article className="metric-tile">
+                        <span>Opening</span>
+                        <strong>{flatLedger.opening_balance}</strong>
+                      </article>
+                      <article className="metric-tile">
+                        <span>Charges</span>
+                        <strong>{flatLedger.total_debits}</strong>
+                      </article>
+                      <article className="metric-tile">
+                        <span>Payments</span>
+                        <strong>{flatLedger.total_credits}</strong>
+                      </article>
+                      <article className="metric-tile">
+                        <span>Closing Due</span>
+                        <strong>{flatLedger.closing_balance}</strong>
+                      </article>
+                    </div>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Reference</th>
+                            <th>Description</th>
+                            <th>Debit</th>
+                            <th>Credit</th>
+                            <th>Balance</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {flatLedger.lines.map((line) => (
+                            <tr key={`${line.source_type}-${line.source_id}`}>
+                              <td>{line.line_date}</td>
+                              <td>{line.source_type}</td>
+                              <td>{line.reference_number ?? ""}</td>
+                              <td>{line.description}</td>
+                              <td>{line.debit_amount}</td>
+                              <td>{line.credit_amount}</td>
+                              <td>{line.running_balance}</td>
+                              <td><StatusPill status={line.status} /></td>
+                            </tr>
+                          ))}
+                          {!flatLedger.lines.length ? (
+                            <tr>
+                              <td colSpan={8} className="empty-cell">
+                                No invoice or payment movement for this flat and date range.
+                              </td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-state-panel">
+                    <h2>Select a flat</h2>
+                    <p>Choose a building and flat to view invoice, penalty, and payment history.</p>
+                  </div>
+                )}
+              </section>
+            </section>
           ) : workspace === "trialBalance" ? (
             <section className="workspace registry-only">
               <section className="data-panel">
@@ -10549,6 +10876,25 @@ function App() {
                     }
                   />
                 </label>
+                <label>
+                  Applicable Penalty Rules
+                  <select
+                    multiple
+                    value={billingRuleForm.late_fee_rule_ids}
+                    onChange={(event) =>
+                      setBillingRuleForm({
+                        ...billingRuleForm,
+                        late_fee_rule_ids: Array.from(event.target.selectedOptions, (option) => option.value)
+                      })
+                    }
+                  >
+                    {activeLateFeeRules.map((rule) => (
+                      <option key={rule.id} value={rule.id}>
+                        {rule.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button
                   type="submit"
                   disabled={
@@ -10589,6 +10935,7 @@ function App() {
                         <th>Schedule</th>
                         <th>Scope</th>
                         <th>Frequency</th>
+                        <th>Penalties</th>
                         <th>Effective</th>
                         <th>Status</th>
                         <th>Actions</th>
@@ -10620,6 +10967,7 @@ function App() {
                           </td>
                           <td>{scopeLabel}</td>
                           <td>{rule.frequency}</td>
+                          <td>{rule.late_fee_rule_ids?.length ?? 0}</td>
                           <td>{[rule.effective_from, rule.effective_to].filter(Boolean).join(" to ")}</td>
                           <td><StatusPill status={rule.status} /></td>
                           <td>
@@ -10645,7 +10993,7 @@ function App() {
                       })}
                       {!billingRules.length && !isLoadingBillingRules ? (
                         <tr>
-                          <td colSpan={10} className="empty-cell">
+                          <td colSpan={11} className="empty-cell">
                             No billing rules for this society yet.
                           </td>
                         </tr>
@@ -11611,6 +11959,25 @@ function App() {
                     }
                   />
                 </label>
+                <label className="wide-field">
+                  Applicable Penalty Rules
+                  <select
+                    multiple
+                    value={manualInvoiceForm.late_fee_rule_ids}
+                    onChange={(event) =>
+                      setManualInvoiceForm((current) => ({
+                        ...current,
+                        late_fee_rule_ids: Array.from(event.target.selectedOptions, (option) => option.value)
+                      }))
+                    }
+                  >
+                    {activeLateFeeRules.map((rule) => (
+                      <option key={rule.id} value={rule.id}>
+                        {rule.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="detail-grid">
                   <div>
                     <span>Total</span>
@@ -11662,6 +12029,19 @@ function App() {
                   </div>
                   {selectedInvoiceDetail ? (
                     <>
+                      <div className="form-actions">
+                        <button
+                          type="button"
+                          disabled={
+                            selectedInvoiceDetail.status === "paid" ||
+                            selectedInvoiceDetail.status === "cancelled" ||
+                            Number(selectedInvoiceDetail.amount_due) <= 0
+                          }
+                          onClick={() => startInvoicePaymentCollection(selectedInvoiceDetail)}
+                        >
+                          Collect Payment
+                        </button>
+                      </div>
                       <div className="detail-grid">
                         <div>
                           <span>Invoice Date</span>
@@ -11848,9 +12228,19 @@ function App() {
                   <section className="data-panel">
                     <div className="section-heading">
                       <h2>Invoice Registry</h2>
-                      <span className="record-count">
-                        {isLoadingInvoices ? "Loading" : `${invoices.length} records`}
-                      </span>
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          className="secondary compact"
+                          disabled={!selectedInvoiceIds.length || isSaving}
+                          onClick={handleBulkInvoiceCancel}
+                        >
+                          Cancel Selected
+                        </button>
+                        <span className="record-count">
+                          {isLoadingInvoices ? "Loading" : `${invoices.length} records`}
+                        </span>
+                      </div>
                     </div>
                     {!invoices.length && !isLoadingInvoices ? (
                       <div className="empty-state-panel">
@@ -11862,6 +12252,37 @@ function App() {
                         <table>
                           <thead>
                             <tr>
+                              <th>
+                                <input
+                                  type="checkbox"
+                                  aria-label="Select cancellable invoices"
+                                  checked={
+                                    invoices.some(
+                                      (invoice) =>
+                                        invoice.status !== "cancelled" && Number(invoice.amount_paid) === 0
+                                    ) &&
+                                    invoices
+                                      .filter(
+                                        (invoice) =>
+                                          invoice.status !== "cancelled" && Number(invoice.amount_paid) === 0
+                                      )
+                                      .every((invoice) => selectedInvoiceIds.includes(invoice.id))
+                                  }
+                                  onChange={(event) => {
+                                    const visibleCancellableIds = invoices
+                                      .filter(
+                                        (invoice) =>
+                                          invoice.status !== "cancelled" && Number(invoice.amount_paid) === 0
+                                      )
+                                      .map((invoice) => invoice.id);
+                                    setSelectedInvoiceIds((current) =>
+                                      event.target.checked
+                                        ? Array.from(new Set([...current, ...visibleCancellableIds]))
+                                        : current.filter((invoiceId) => !visibleCancellableIds.includes(invoiceId))
+                                    );
+                                  }}
+                                />
+                              </th>
                               <th>Invoice</th>
                               <th>Flat</th>
                               <th>Date</th>
@@ -11881,6 +12302,22 @@ function App() {
                                   className="clickable-row"
                                   onClick={() => setSelectedInvoiceId(invoice.id)}
                                 >
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      aria-label={`Select invoice ${invoice.invoice_number}`}
+                                      disabled={invoice.status === "cancelled" || Number(invoice.amount_paid) > 0}
+                                      checked={selectedInvoiceIds.includes(invoice.id)}
+                                      onClick={(event) => event.stopPropagation()}
+                                      onChange={(event) =>
+                                        setSelectedInvoiceIds((current) =>
+                                          event.target.checked
+                                            ? [...current, invoice.id]
+                                            : current.filter((invoiceId) => invoiceId !== invoice.id)
+                                        )
+                                      }
+                                    />
+                                  </td>
                                   <td>{invoice.invoice_number}</td>
                                   <td>{flat?.flat_number ?? ""}</td>
                                   <td>{invoice.invoice_date}</td>
@@ -11889,6 +12326,21 @@ function App() {
                                   <td>{invoice.amount_due}</td>
                                   <td><StatusPill status={invoice.status} /></td>
                                   <td>
+                                    <button
+                                      type="button"
+                                      className="secondary compact"
+                                      disabled={
+                                        invoice.status === "paid" ||
+                                        invoice.status === "cancelled" ||
+                                        Number(invoice.amount_due) <= 0
+                                      }
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        startInvoicePaymentCollection(invoice);
+                                      }}
+                                    >
+                                      Collect
+                                    </button>
                                     <button
                                       type="button"
                                       className="secondary compact"

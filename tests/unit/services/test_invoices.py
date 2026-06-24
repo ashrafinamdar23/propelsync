@@ -20,6 +20,7 @@ from app.services.invoices import (
     InvoiceSocietyNotFoundError,
     ManualInvoiceReferenceInvalidError,
     build_invoice_generation_preview,
+    bulk_cancel_invoices,
     cancel_invoice,
     ensure_society_exists,
     ensure_manual_invoice_references,
@@ -65,6 +66,9 @@ class FakeSession:
                 instance.id = uuid.uuid4()
 
     def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
         return None
 
     def refresh(self, *_: object) -> None:
@@ -475,7 +479,55 @@ def test_manual_invoice_reference_validation_rejects_missing_flat() -> None:
 def test_cancel_invoice_marks_invoice_cancelled_and_zeroes_due() -> None:
     tenant_id = uuid.uuid4()
     society_id = uuid.uuid4()
+    journal_entry = JournalEntry(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        journal_date=date(2026, 7, 1),
+        source_type="invoice",
+        source_id=uuid.uuid4(),
+        reference_number="INV-001",
+        description="Invoice posted: INV-001",
+        status="posted",
+    )
     invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        flat_id=uuid.uuid4(),
+        journal_entry_id=journal_entry.id,
+        invoice_number="INV-001",
+        invoice_date=date(2026, 7, 1),
+        due_date=date(2026, 7, 10),
+        billing_period_start=date(2026, 7, 1),
+        billing_period_end=date(2026, 7, 31),
+        total_amount=Decimal("500.00"),
+        amount_paid=Decimal("0.00"),
+        amount_due=Decimal("500.00"),
+        status="issued",
+    )
+    actor = FakeActor()
+    session = FakeSession(scalar_results=[invoice, journal_entry])
+
+    cancelled = cancel_invoice(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        invoice_id=invoice.id,
+        reason="Wrong flat",
+        actor=actor,  # type: ignore[arg-type]
+    )
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.amount_due == Decimal("0.00")
+    assert "Wrong flat" in (cancelled.notes or "")
+    assert journal_entry.status == "reversed"
+
+
+def test_bulk_cancel_invoices_returns_success_and_failures() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    cancellable_invoice = Invoice(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
         society_id=society_id,
@@ -490,21 +542,38 @@ def test_cancel_invoice_marks_invoice_cancelled_and_zeroes_due() -> None:
         amount_due=Decimal("500.00"),
         status="issued",
     )
+    paid_invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        flat_id=uuid.uuid4(),
+        invoice_number="INV-002",
+        invoice_date=date(2026, 7, 1),
+        due_date=date(2026, 7, 10),
+        billing_period_start=date(2026, 7, 1),
+        billing_period_end=date(2026, 7, 31),
+        total_amount=Decimal("500.00"),
+        amount_paid=Decimal("100.00"),
+        amount_due=Decimal("400.00"),
+        status="partially_paid",
+    )
     actor = FakeActor()
-    session = FakeSession(scalar_results=[invoice])
+    session = FakeSession(scalar_results=[cancellable_invoice, paid_invoice])
 
-    cancelled = cancel_invoice(
+    response = bulk_cancel_invoices(
         session,  # type: ignore[arg-type]
         tenant_context=build_context(tenant_id),
         society_id=society_id,
-        invoice_id=invoice.id,
-        reason="Wrong flat",
+        invoice_ids=[cancellable_invoice.id, paid_invoice.id],
+        reason="Regenerate invoices",
         actor=actor,  # type: ignore[arg-type]
     )
 
-    assert cancelled.status == "cancelled"
-    assert cancelled.amount_due == Decimal("0.00")
-    assert "Wrong flat" in (cancelled.notes or "")
+    assert response.requested_count == 2
+    assert response.cancelled_count == 1
+    assert response.failed_count == 1
+    assert cancellable_invoice.status == "cancelled"
+    assert paid_invoice.status == "partially_paid"
 
 
 def test_cancel_invoice_rejects_paid_invoice() -> None:

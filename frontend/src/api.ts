@@ -305,6 +305,7 @@ export type BillingRule = {
   effective_from: string;
   effective_to: string | null;
   description: string | null;
+  late_fee_rule_ids: string[];
   status: string;
   created_at: string;
   updated_at: string;
@@ -328,6 +329,7 @@ export type BillingRulePayload = {
   effective_from: string;
   effective_to?: string | null;
   description?: string | null;
+  late_fee_rule_ids?: string[];
 };
 
 export type Invoice = {
@@ -393,7 +395,20 @@ export type ManualInvoicePayload = {
   billing_period_start: string;
   billing_period_end: string;
   notes?: string | null;
+  late_fee_rule_ids?: string[];
   line_items: ManualInvoiceLinePayload[];
+};
+
+export type InvoiceBulkCancelResponse = {
+  requested_count: number;
+  cancelled_count: number;
+  failed_count: number;
+  results: {
+    invoice_id: string;
+    status: string;
+    invoice_number: string | null;
+    error: string | null;
+  }[];
 };
 
 export type DocumentSequence = {
@@ -670,6 +685,32 @@ export type OutstandingSummary = {
   overdue_amount: string;
   ageing: AgeingBuckets;
   rows: OutstandingFlatRow[];
+};
+
+export type FlatLedgerLine = {
+  line_date: string;
+  source_type: string;
+  source_id: string;
+  reference_number: string | null;
+  description: string;
+  debit_amount: string;
+  credit_amount: string;
+  running_balance: string;
+  status: string;
+};
+
+export type FlatLedger = {
+  tenant_id: string;
+  society_id: string;
+  flat_id: string;
+  flat_number: string;
+  date_from: string | null;
+  date_to: string | null;
+  opening_balance: string;
+  total_debits: string;
+  total_credits: string;
+  closing_balance: string;
+  lines: FlatLedgerLine[];
 };
 
 export type ChartOfAccount = {
@@ -1603,6 +1644,27 @@ export function listFlatTypes(token: string, tenantId: string, societyId: string
   return tenantApiRequest<FlatType[]>(`/societies/${societyId}/flat-types`, token, tenantId);
 }
 
+export function getFlatLedger(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  flatId: string,
+  filters: { date_from?: string; date_to?: string } = {}
+): Promise<FlatLedger> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) {
+      params.set(key, value);
+    }
+  });
+  const query = params.toString();
+  return tenantApiRequest<FlatLedger>(
+    `/societies/${societyId}/flats/${flatId}/ledger${query ? `?${query}` : ""}`,
+    token,
+    tenantId
+  );
+}
+
 export function createFlatType(
   token: string,
   tenantId: string,
@@ -1890,6 +1952,24 @@ export function cancelInvoice(
     {
       method: "POST",
       body: JSON.stringify({ reason })
+    }
+  );
+}
+
+export function bulkCancelInvoices(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  invoiceIds: string[],
+  reason: string
+): Promise<InvoiceBulkCancelResponse> {
+  return tenantApiRequest<InvoiceBulkCancelResponse>(
+    `/societies/${societyId}/invoices/bulk-cancel`,
+    token,
+    tenantId,
+    {
+      method: "POST",
+      body: JSON.stringify({ invoice_ids: invoiceIds, reason })
     }
   );
 }

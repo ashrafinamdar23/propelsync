@@ -9,6 +9,7 @@ from app.models import (
     ChargeType,
     Flat,
     Invoice,
+    InvoiceLateFeeRule,
     InvoiceLineItem,
     JournalEntry,
     LateFeeApplication,
@@ -345,13 +346,18 @@ def build_late_fee_preview(
     flats_by_id: dict[uuid.UUID, Flat],
     applications_by_invoice_rule: dict[tuple[uuid.UUID, uuid.UUID], list[LateFeeApplication]],
     penalty_invoice_ids: set[uuid.UUID],
+    invoice_late_fee_rule_ids: dict[uuid.UUID, set[uuid.UUID]] | None = None,
 ) -> LateFeePreviewResponse:
     rows: list[LateFeePreviewRow] = []
+    enforce_invoice_assignments = invoice_late_fee_rule_ids is not None
+    invoice_late_fee_rule_ids = invoice_late_fee_rule_ids or {}
     for invoice in invoices:
         flat = flats_by_id.get(invoice.flat_id)
         if flat is None or invoice.id in penalty_invoice_ids:
             continue
         for rule in rules:
+            if enforce_invoice_assignments and rule.id not in invoice_late_fee_rule_ids.get(invoice.id, set()):
+                continue
             errors: list[str] = []
             days_overdue = max((payload.as_of_date - invoice.due_date).days, 0)
             existing_applications = applications_by_invoice_rule.get((invoice.id, rule.id), [])
@@ -432,7 +438,14 @@ def load_late_fee_preview_context(
     tenant_context: TenantContext,
     society_id: uuid.UUID,
     payload: LateFeePreviewRequest,
-) -> tuple[list[LateFeeRule], list[Invoice], dict[uuid.UUID, Flat], dict[tuple[uuid.UUID, uuid.UUID], list[LateFeeApplication]], set[uuid.UUID]]:
+) -> tuple[
+    list[LateFeeRule],
+    list[Invoice],
+    dict[uuid.UUID, Flat],
+    dict[tuple[uuid.UUID, uuid.UUID], list[LateFeeApplication]],
+    set[uuid.UUID],
+    dict[uuid.UUID, set[uuid.UUID]],
+]:
     rules = list(
         session.scalars(
             select(LateFeeRule).where(
@@ -458,6 +471,20 @@ def load_late_fee_preview_context(
         )
     )
     flat_ids = {invoice.flat_id for invoice in invoices}
+    invoice_late_fee_rows = list(
+        session.scalars(
+            select(InvoiceLateFeeRule).where(
+                InvoiceLateFeeRule.tenant_id == tenant_context.tenant_id,
+                InvoiceLateFeeRule.society_id == society_id,
+                InvoiceLateFeeRule.invoice_id.in_({invoice.id for invoice in invoices}),
+                InvoiceLateFeeRule.late_fee_rule_id.in_(payload.late_fee_rule_ids),
+                InvoiceLateFeeRule.status == "active",
+            )
+        )
+    )
+    invoice_late_fee_rule_ids: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for row in invoice_late_fee_rows:
+        invoice_late_fee_rule_ids.setdefault(row.invoice_id, set()).add(row.late_fee_rule_id)
     flats_by_id = {
         flat.id: flat
         for flat in session.scalars(
@@ -485,7 +512,7 @@ def load_late_fee_preview_context(
             [],
         ).append(application)
     penalty_invoice_ids = {application.penalty_invoice_id for application in applications}
-    return rules, invoices, flats_by_id, applications_by_invoice_rule, penalty_invoice_ids
+    return rules, invoices, flats_by_id, applications_by_invoice_rule, penalty_invoice_ids, invoice_late_fee_rule_ids
 
 
 def preview_late_fee_application(
@@ -496,7 +523,7 @@ def preview_late_fee_application(
     payload: LateFeePreviewRequest,
 ) -> LateFeePreviewResponse:
     ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
-    rules, invoices, flats_by_id, applications_by_invoice_rule, penalty_invoice_ids = load_late_fee_preview_context(
+    rules, invoices, flats_by_id, applications_by_invoice_rule, penalty_invoice_ids, invoice_late_fee_rule_ids = load_late_fee_preview_context(
         session,
         tenant_context=tenant_context,
         society_id=society_id,
@@ -509,6 +536,7 @@ def preview_late_fee_application(
         flats_by_id=flats_by_id,
         applications_by_invoice_rule=applications_by_invoice_rule,
         penalty_invoice_ids=penalty_invoice_ids,
+        invoice_late_fee_rule_ids=invoice_late_fee_rule_ids,
     )
 
 

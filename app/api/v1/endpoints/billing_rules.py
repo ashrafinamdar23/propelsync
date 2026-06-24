@@ -14,6 +14,7 @@ from app.services.billing_rules import (
     BillingRuleSocietyNotFoundError,
     change_billing_rule_status,
     create_billing_rule,
+    list_billing_rule_late_fee_rule_ids,
     list_billing_rules,
     update_billing_rule,
 )
@@ -24,8 +25,10 @@ from app.tenants.deps import require_society_admin_context
 router = APIRouter(prefix="/societies/{society_id}/billing-rules")
 
 
-def billing_rule_to_read(rule: BillingRule) -> BillingRuleRead:
-    return BillingRuleRead.model_validate(rule)
+def billing_rule_to_read(rule: BillingRule, late_fee_rule_ids: list[uuid.UUID] | None = None) -> BillingRuleRead:
+    data = BillingRuleRead.model_validate(rule).model_dump()
+    data["late_fee_rule_ids"] = late_fee_rule_ids or []
+    return BillingRuleRead.model_validate(data)
 
 
 @router.get("", response_model=list[BillingRuleRead])
@@ -36,9 +39,14 @@ def read_billing_rules(
 ) -> list[BillingRuleRead]:
     try:
         rules = list_billing_rules(db, tenant_context=tenant_context, society_id=society_id)
+        late_fee_rule_ids_by_rule_id = list_billing_rule_late_fee_rule_ids(
+            db,
+            tenant_context=tenant_context,
+            society_id=society_id,
+        )
     except BillingRuleSocietyNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Society not found.") from exc
-    return [billing_rule_to_read(rule) for rule in rules]
+    return [billing_rule_to_read(rule, late_fee_rule_ids_by_rule_id.get(rule.id, [])) for rule in rules]
 
 
 @router.post("", response_model=BillingRuleRead, status_code=status.HTTP_201_CREATED)
@@ -62,7 +70,7 @@ def create_society_billing_rule(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except BillingRuleReferenceInvalidError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return billing_rule_to_read(rule)
+    return billing_rule_to_read(rule, payload.late_fee_rule_ids)
 
 
 @router.patch("/{billing_rule_id}", response_model=BillingRuleRead)
@@ -88,7 +96,7 @@ def update_society_billing_rule(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except BillingRuleReferenceInvalidError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return billing_rule_to_read(rule)
+    return billing_rule_to_read(rule, payload.late_fee_rule_ids)
 
 
 @router.post("/{billing_rule_id}/inactivate", response_model=BillingRuleRead)
@@ -109,7 +117,12 @@ def inactivate_society_billing_rule(
         )
     except BillingRuleNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Billing rule not found.") from exc
-    return billing_rule_to_read(rule)
+    late_fee_rule_ids = list_billing_rule_late_fee_rule_ids(
+        db,
+        tenant_context=tenant_context,
+        society_id=society_id,
+    )
+    return billing_rule_to_read(rule, late_fee_rule_ids.get(rule.id, []))
 
 
 @router.post("/{billing_rule_id}/activate", response_model=BillingRuleRead)
@@ -130,4 +143,9 @@ def activate_society_billing_rule(
         )
     except BillingRuleNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Billing rule not found.") from exc
-    return billing_rule_to_read(rule)
+    late_fee_rule_ids = list_billing_rule_late_fee_rule_ids(
+        db,
+        tenant_context=tenant_context,
+        society_id=society_id,
+    )
+    return billing_rule_to_read(rule, late_fee_rule_ids.get(rule.id, []))
