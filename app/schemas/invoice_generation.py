@@ -12,6 +12,7 @@ class InvoiceGenerationRequest(BaseModel):
     invoice_date: date
     due_date: date
     billing_rule_ids: list[uuid.UUID] = Field(min_length=1)
+    flat_ids: list[uuid.UUID] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_dates(self) -> "InvoiceGenerationRequest":

@@ -212,6 +212,8 @@ def list_invoices(
     status: str | None = None,
     invoice_date_from: date | None = None,
     invoice_date_to: date | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
 ) -> list[Invoice]:
     ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
     statement = build_invoice_list_statement(
@@ -221,6 +223,8 @@ def list_invoices(
         status=status,
         invoice_date_from=invoice_date_from,
         invoice_date_to=invoice_date_to,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
     )
     return list(
         session.scalars(
@@ -237,6 +241,8 @@ def build_invoice_list_statement(
     status: str | None = None,
     invoice_date_from: date | None = None,
     invoice_date_to: date | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
 ):
     statement = select(Invoice).where(
         Invoice.tenant_id == tenant_context.tenant_id,
@@ -250,6 +256,10 @@ def build_invoice_list_statement(
         statement = statement.where(Invoice.invoice_date >= invoice_date_from)
     if invoice_date_to is not None:
         statement = statement.where(Invoice.invoice_date <= invoice_date_to)
+    if due_date_from is not None:
+        statement = statement.where(Invoice.due_date >= due_date_from)
+    if due_date_to is not None:
+        statement = statement.where(Invoice.due_date <= due_date_to)
     return statement
 
 
@@ -262,6 +272,8 @@ def list_invoices_paginated(
     status: str | None = None,
     invoice_date_from: date | None = None,
     invoice_date_to: date | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[Invoice], int]:
@@ -273,6 +285,8 @@ def list_invoices_paginated(
         status=status,
         invoice_date_from=invoice_date_from,
         invoice_date_to=invoice_date_to,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
     )
     total_items = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
     rows = list(
@@ -316,9 +330,12 @@ def load_generation_context(
                 Flat.tenant_id == tenant_context.tenant_id,
                 Flat.society_id == society_id,
                 Flat.status == "active",
+                *([Flat.id.in_(payload.flat_ids)] if payload.flat_ids else []),
             )
         )
     )
+    if payload.flat_ids and {flat.id for flat in flats} != set(payload.flat_ids):
+        raise InvoiceGenerationRuleSelectionError("All selected flats must be active and belong to this society.")
     rules = list(
         session.scalars(
             select(BillingRule).where(

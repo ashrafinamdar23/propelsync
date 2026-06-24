@@ -358,6 +358,8 @@ export type InvoiceListFilters = {
   status?: string;
   invoice_date_from?: string;
   invoice_date_to?: string;
+  due_date_from?: string;
+  due_date_to?: string;
   page?: number;
   page_size?: number;
 };
@@ -454,6 +456,7 @@ export type InvoiceGenerationPayload = {
   invoice_date: string;
   due_date: string;
   billing_rule_ids: string[];
+  flat_ids?: string[];
 };
 
 export type InvoiceGenerationLinePreview = {

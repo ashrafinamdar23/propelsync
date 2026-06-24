@@ -521,6 +521,8 @@ const invoiceFilterDefaults = {
   month: "",
   invoice_date_from: "",
   invoice_date_to: "",
+  due_date_from: "",
+  due_date_to: "",
   flat_id: "",
   status: "",
   page: 1,
@@ -784,7 +786,8 @@ function currentMonthInvoiceGenerationDefaults(): InvoiceGenerationPayload {
     billing_period_end: toIsoDate(periodEnd),
     invoice_date: toIsoDate(invoiceDate),
     due_date: toIsoDate(dueDate),
-    billing_rule_ids: []
+    billing_rule_ids: [],
+    flat_ids: []
   };
 }
 
@@ -2019,6 +2022,8 @@ function App() {
         status: filters.status || undefined,
         invoice_date_from: filters.invoice_date_from || undefined,
         invoice_date_to: filters.invoice_date_to || undefined,
+        due_date_from: filters.due_date_from || undefined,
+        due_date_to: filters.due_date_to || undefined,
         page: filters.page,
         page_size: filters.page_size
       };
@@ -3455,6 +3460,34 @@ function App() {
     setInvoiceGenerationForm((current) => ({
       ...current,
       billing_rule_ids: []
+    }));
+  }
+
+  function toggleInvoiceGenerationFlat(flatId: string) {
+    setInvoiceGenerationPreview(null);
+    setInvoiceGenerationForm((current) => {
+      const selectedFlatIds = current.flat_ids ?? [];
+      const isSelected = selectedFlatIds.includes(flatId);
+      return {
+        ...current,
+        flat_ids: isSelected ? selectedFlatIds.filter((id) => id !== flatId) : [...selectedFlatIds, flatId]
+      };
+    });
+  }
+
+  function selectAllInvoiceGenerationFlats() {
+    setInvoiceGenerationPreview(null);
+    setInvoiceGenerationForm((current) => ({
+      ...current,
+      flat_ids: flats.map((flat) => flat.id)
+    }));
+  }
+
+  function clearInvoiceGenerationFlats() {
+    setInvoiceGenerationPreview(null);
+    setInvoiceGenerationForm((current) => ({
+      ...current,
+      flat_ids: []
     }));
   }
 
@@ -12347,6 +12380,56 @@ function App() {
                     ) : null}
                   </div>
                 </div>
+                <div className="rule-picker">
+                  <div className="rule-picker-heading">
+                    <div>
+                      <h3>Flats</h3>
+                      <span>
+                        {(invoiceGenerationForm.flat_ids ?? []).length
+                          ? `${(invoiceGenerationForm.flat_ids ?? []).length} of ${flats.length} selected`
+                          : "All active flats"}
+                      </span>
+                    </div>
+                    <div className="form-actions compact-actions">
+                      <button
+                        type="button"
+                        className="secondary compact"
+                        disabled={!flats.length}
+                        onClick={selectAllInvoiceGenerationFlats}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary compact"
+                        disabled={!(invoiceGenerationForm.flat_ids ?? []).length}
+                        onClick={clearInvoiceGenerationFlats}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rule-grid">
+                    {flats.map((flat) => (
+                      <label key={flat.id} className="rule-option">
+                        <input
+                          type="checkbox"
+                          checked={(invoiceGenerationForm.flat_ids ?? []).includes(flat.id)}
+                          onChange={() => toggleInvoiceGenerationFlat(flat.id)}
+                        />
+                        <span>
+                          <strong>{flat.flat_number}</strong>
+                          <small>{buildings.find((building) => building.id === flat.building_id)?.name ?? "Building"}</small>
+                        </span>
+                      </label>
+                    ))}
+                    {!flats.length ? (
+                      <div className="empty-inline">
+                        No active flats are loaded for this society.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="form-actions">
                   <button
                     type="submit"
@@ -12792,6 +12875,34 @@ function App() {
                               ...current,
                               month: "",
                               invoice_date_to: event.target.value,
+                              page: 1
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Due From
+                        <input
+                          type="date"
+                          value={invoiceFilters.due_date_from}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({
+                              ...current,
+                              due_date_from: event.target.value,
+                              page: 1
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Due To
+                        <input
+                          type="date"
+                          value={invoiceFilters.due_date_to}
+                          onChange={(event) =>
+                            setInvoiceFilters((current) => ({
+                              ...current,
+                              due_date_to: event.target.value,
                               page: 1
                             }))
                           }

@@ -407,8 +407,10 @@ income revenue account.
 
 Invoice generation is a preview-first workflow. Admins provide `billing_period_start`,
 `billing_period_end`, `invoice_date`, `due_date`, and one or more `billing_rule_ids`, so backdated
-billing is supported. For example, on 2026-06-21 an admin may generate the April period by selecting
-`2026-04-01` to `2026-04-30`.
+billing is supported. Optional `flat_ids` restrict preview and confirm to selected flats, which is
+useful for correcting unpaid invoices without disturbing flats that already have paid records. For
+example, on 2026-06-21 an admin may generate the April period by selecting `2026-04-01` to
+`2026-04-30`.
 
 Preview evaluates active flats and the selected active non-manual billing rules for the selected
 society. It returns valid, skipped, and invalid rows without creating invoices. Confirm re-runs the
@@ -433,6 +435,10 @@ current active primary owner for the selected flat when available.
 Invoices are not hard-deleted. Wrong invoices should be cancelled with a reason. Cancellation sets
 status to `cancelled`, clears `amount_due`, preserves the invoice record, and writes an audit log.
 Invoices with paid amounts cannot be cancelled directly.
+
+Invoice registry filters support invoice date range, due date range, flat, and status. Use the due
+date filters to find accidental bills such as May invoices with a June due date before deciding which
+unpaid invoices should be cancelled and regenerated.
 
 ## Late Fee / Penalty APIs
 

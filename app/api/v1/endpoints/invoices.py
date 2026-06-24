@@ -59,6 +59,8 @@ def read_invoices(
     flat_id: Annotated[uuid.UUID | None, Query()] = None,
     invoice_date_from: Annotated[date | None, Query()] = None,
     invoice_date_to: Annotated[date | None, Query()] = None,
+    due_date_from: Annotated[date | None, Query()] = None,
+    due_date_to: Annotated[date | None, Query()] = None,
     invoice_status: Annotated[str | None, Query(alias="status")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -72,6 +74,8 @@ def read_invoices(
             status=invoice_status,
             invoice_date_from=invoice_date_from,
             invoice_date_to=invoice_date_to,
+            due_date_from=due_date_from,
+            due_date_to=due_date_to,
             page=page,
             page_size=page_size,
         )

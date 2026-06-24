@@ -24,6 +24,7 @@ from app.services.invoices import (
     cancel_invoice,
     ensure_society_exists,
     ensure_manual_invoice_references,
+    load_generation_context,
     list_invoice_line_items,
     list_invoices,
     post_invoice_journal,
@@ -39,16 +40,26 @@ class FakeScalarResult:
         return iter(self.rows)
 
 
+class FakeExecuteResult:
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self.rows = rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
 class FakeSession:
     def __init__(
         self,
         scalar_results: list[object | None] | None = None,
         scalars_results: list[list[object]] | None = None,
+        execute_results: list[list[tuple[object, ...]]] | None = None,
     ) -> None:
         self.scalar_results = scalar_results or []
         self.scalars_results = scalars_results or []
         self.added: list[object] = []
         self.scalars_calls: list[object] = []
+        self.execute_results = execute_results or []
 
     def scalar(self, *_: object) -> object | None:
         return self.scalar_results.pop(0) if self.scalar_results else None
@@ -56,6 +67,9 @@ class FakeSession:
     def scalars(self, *args: object) -> FakeScalarResult:
         self.scalars_calls.append(args[0])
         return FakeScalarResult(self.scalars_results.pop(0) if self.scalars_results else [])
+
+    def execute(self, *_: object) -> FakeExecuteResult:
+        return FakeExecuteResult(self.execute_results.pop(0) if self.execute_results else [])
 
     def add(self, instance: object) -> None:
         self.added.append(instance)
@@ -203,6 +217,8 @@ def test_list_invoices_applies_optional_filters() -> None:
         status="issued",
         invoice_date_from=date(2026, 4, 1),
         invoice_date_to=date(2026, 4, 30),
+        due_date_from=date(2026, 5, 15),
+        due_date_to=date(2026, 6, 15),
     )
 
     params = session.scalars_calls[0].compile().params
@@ -210,6 +226,8 @@ def test_list_invoices_applies_optional_filters() -> None:
     assert "issued" in params.values()
     assert date(2026, 4, 1) in params.values()
     assert date(2026, 4, 30) in params.values()
+    assert date(2026, 5, 15) in params.values()
+    assert date(2026, 6, 15) in params.values()
 
 
 def test_list_invoice_line_items_returns_ordered_rows() -> None:
@@ -237,6 +255,41 @@ def test_list_invoice_line_items_returns_ordered_rows() -> None:
     )
 
     assert rows == [line]
+
+
+def test_generation_context_limits_to_selected_flats() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    flat = build_flat(tenant_id=tenant_id, society_id=society_id)
+    rule = build_billing_rule(tenant_id=tenant_id, society_id=society_id)
+    payload = build_generation_payload().model_copy(
+        update={
+            "billing_rule_ids": [rule.id],
+            "flat_ids": [flat.id],
+        }
+    )
+    session = FakeSession(
+        scalars_results=[
+            [flat],
+            [rule],
+            [],
+        ],
+        execute_results=[[]],
+    )
+
+    flats, rules, existing_rule_lines, ownerships = load_generation_context(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        payload=payload,
+    )
+
+    assert flats == [flat]
+    assert rules == [rule]
+    assert existing_rule_lines == []
+    assert ownerships == []
+    flat_query_params = session.scalars_calls[0].compile().params
+    assert [flat.id] in flat_query_params.values()
 
 
 def test_post_invoice_journal_debits_receivable_and_credits_revenue() -> None:
