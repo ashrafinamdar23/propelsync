@@ -18,6 +18,7 @@ from app.models.late_fee import BillingRuleLateFeeRule, InvoiceLateFeeRule, Late
 from app.models.lease_agreement import LeaseAgreement
 from app.models.membership import SocietyMembership, TenantMembership
 from app.models.owner import Owner
+from app.models.other_income import OtherIncomeReceipt
 from app.models.payment import Payment, PaymentAllocation
 from app.models.resident import Resident
 from app.models.scheduled_job import ScheduledJobRun
@@ -53,6 +54,7 @@ __all__ = [
     "LateFeeRule",
     "LeaseAgreement",
     "Owner",
+    "OtherIncomeReceipt",
     "Payment",
     "PaymentAllocation",
     "Resident",

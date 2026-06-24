@@ -550,6 +550,18 @@ p {
   margin: 0;
 }
 
+.compact-field {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: row;
+  gap: 8px;
+  margin: 0;
+}
+
+.compact-field select {
+  min-width: 84px;
+}
+
 .rule-picker {
   border: 1px solid #d8e0e8;
   border-radius: 8px;
@@ -754,6 +766,20 @@ th {
   height: 58px;
   color: #65758b;
   text-align: center;
+}
+
+.table-subtext {
+  display: block;
+  margin-top: 3px;
+  color: #65758b;
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+
+.payment-result {
+  display: grid;
+  gap: 18px;
+  padding: 16px;
 }
 
 .row-actions {

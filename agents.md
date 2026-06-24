@@ -354,6 +354,7 @@ Do not mark an item as Completed until it has been implemented, tested where app
 | 46 | Define journal line model | Tested |
 | 47 | Define bank/cash account transfer model | Tested |
 | 48 | Define inter-account transfer workflow | Tested |
+| 48A | Define other income receipt workflow | Tested |
 | 49 | Define account ledger view/API/UI | Tested |
 | 50 | Define trial balance API/UI | Tested |
 | 51 | Define income vs expense report API/UI/export | Tested |
@@ -386,6 +387,7 @@ Do not mark an item as Completed until it has been implemented, tested where app
 | 66 | Define invoice cancellation APIs | Tested |
 | 67 | Define document numbering APIs | Tested |
 | 68 | Define payment APIs | Tested |
+| 68A | Define payment register APIs | Tested |
 | 69 | Define outstanding APIs | Tested |
 | 70 | Define vendor APIs | Tested |
 | 71 | Define expense category APIs | Tested |
@@ -393,6 +395,7 @@ Do not mark an item as Completed until it has been implemented, tested where app
 | 73 | Define expense payment APIs | Tested |
 | 74 | Define journal APIs | Tested |
 | 75 | Define account transfer APIs | Tested |
+| 75A | Define other income receipt APIs | Tested |
 | 76 | Define invoice journal posting APIs | Tested |
 | 77 | Define account ledger APIs | Tested |
 | 78 | Define trial balance APIs | Tested |
@@ -453,6 +456,7 @@ Do not mark an item as Completed until it has been implemented, tested where app
 | 90 | Invoice numbering settings | Tested |
 | 91 | Manual invoices | Tested |
 | 92 | Payments | Tested |
+| 92A | Payment Register | Tested |
 | 93 | Outstanding | Tested |
 | 94 | Vendors | Tested |
 | 95 | Expense Categories | Tested |
@@ -460,6 +464,7 @@ Do not mark an item as Completed until it has been implemented, tested where app
 | 97 | Expense Payments | Tested |
 | 98 | Journal Entries | Tested |
 | 99 | Account Transfers | Tested |
+| 99A | Other Income Receipts | Tested |
 | 100 | Account Ledger | Tested |
 | 101 | Trial Balance | Tested |
 | 102 | Income vs Expense Report | Tested |

@@ -51,6 +51,18 @@ class PaymentAllocationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaymentCancelledPenaltyRead(BaseModel):
+    id: uuid.UUID
+    invoice_number: str
+    invoice_date: date
+    due_date: date
+    total_amount: Decimal = Field(ge=0, decimal_places=2)
+    amount_due: Decimal = Field(ge=0, decimal_places=2)
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PaymentRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
@@ -73,3 +85,27 @@ class PaymentRead(BaseModel):
 
 class PaymentDetailRead(PaymentRead):
     allocations: list[PaymentAllocationRead]
+    auto_cancelled_penalty_invoices: list[PaymentCancelledPenaltyRead] = Field(default_factory=list)
+
+
+class PaymentRegisterRow(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    society_id: uuid.UUID
+    flat_id: uuid.UUID
+    flat_number: str
+    building_id: uuid.UUID
+    building_name: str
+    wing_id: uuid.UUID | None = None
+    wing_name: str | None = None
+    deposit_account_id: uuid.UUID | None = None
+    journal_entry_id: uuid.UUID | None = None
+    payment_date: date
+    amount: Decimal = Field(gt=0, decimal_places=2)
+    unapplied_amount: Decimal = Field(ge=0, decimal_places=2)
+    payment_mode: str
+    reference_number: str | None = None
+    status: str
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime

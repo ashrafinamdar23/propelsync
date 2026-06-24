@@ -21,6 +21,7 @@ from app.schemas.invoice_generation import (
     InvoiceGenerationPreviewResponse,
     InvoiceGenerationRequest,
 )
+from app.schemas.pagination import PaginatedResponse
 from app.services.invoices import (
     InvoiceGenerationValidationError,
     InvoiceGenerationRuleSelectionError,
@@ -36,6 +37,7 @@ from app.services.invoices import (
     get_invoice_or_raise,
     list_invoice_line_items,
     list_invoices,
+    list_invoices_paginated,
     preview_invoice_generation,
 )
 from app.tenants.context import TenantContext
@@ -49,7 +51,7 @@ def invoice_to_read(invoice: Invoice) -> InvoiceRead:
     return InvoiceRead.model_validate(invoice)
 
 
-@router.get("", response_model=list[InvoiceRead])
+@router.get("", response_model=PaginatedResponse[InvoiceRead])
 def read_invoices(
     society_id: uuid.UUID,
     tenant_context: Annotated[TenantContext, Depends(require_society_admin_context)],
@@ -58,9 +60,11 @@ def read_invoices(
     invoice_date_from: Annotated[date | None, Query()] = None,
     invoice_date_to: Annotated[date | None, Query()] = None,
     invoice_status: Annotated[str | None, Query(alias="status")] = None,
-) -> list[InvoiceRead]:
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> PaginatedResponse[InvoiceRead]:
     try:
-        invoices = list_invoices(
+        invoices, total_items = list_invoices_paginated(
             db,
             tenant_context=tenant_context,
             society_id=society_id,
@@ -68,12 +72,20 @@ def read_invoices(
             status=invoice_status,
             invoice_date_from=invoice_date_from,
             invoice_date_to=invoice_date_to,
+            page=page,
+            page_size=page_size,
         )
     except InvoiceSocietyNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Society not found.") from exc
     except InvoiceGenerationRuleSelectionError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return [invoice_to_read(invoice) for invoice in invoices]
+    return PaginatedResponse[InvoiceRead](
+        items=[invoice_to_read(invoice) for invoice in invoices],
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=(total_items + page_size - 1) // page_size,
+    )
 
 
 @router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED)

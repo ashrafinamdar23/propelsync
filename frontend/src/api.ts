@@ -358,6 +358,16 @@ export type InvoiceListFilters = {
   status?: string;
   invoice_date_from?: string;
   invoice_date_to?: string;
+  page?: number;
+  page_size?: number;
+};
+
+export type PaginatedResponse<T> = {
+  items: T[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
 };
 
 export type InvoiceLineItem = {
@@ -634,6 +644,67 @@ export type Payment = {
   notes: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type PaymentAllocation = {
+  id: string;
+  tenant_id: string;
+  society_id: string;
+  payment_id: string;
+  invoice_id: string;
+  allocated_amount: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaymentCancelledPenaltyInvoice = {
+  id: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string;
+  total_amount: string;
+  amount_due: string;
+  status: string;
+};
+
+export type PaymentDetail = Payment & {
+  allocations: PaymentAllocation[];
+  auto_cancelled_penalty_invoices: PaymentCancelledPenaltyInvoice[];
+};
+
+export type PaymentRegisterRow = {
+  id: string;
+  tenant_id: string;
+  society_id: string;
+  flat_id: string;
+  flat_number: string;
+  building_id: string;
+  building_name: string;
+  wing_id: string | null;
+  wing_name: string | null;
+  deposit_account_id: string | null;
+  journal_entry_id: string | null;
+  payment_date: string;
+  amount: string;
+  unapplied_amount: string;
+  payment_mode: string;
+  reference_number: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaymentRegisterFilters = {
+  flat_id?: string;
+  flat_number?: string;
+  status?: string;
+  payment_mode?: string;
+  payment_date_from?: string;
+  payment_date_to?: string;
+  page?: number;
+  page_size?: number;
 };
 
 export type PaymentAllocationPayload = {
@@ -1012,6 +1083,39 @@ export type AccountTransferPayload = {
   transfer_date: string;
   amount: string;
   transfer_mode: string;
+  reference_number?: string | null;
+  description: string;
+  notes?: string | null;
+};
+
+export type OtherIncomeReceipt = {
+  id: string;
+  tenant_id: string;
+  society_id: string;
+  income_account_id: string;
+  deposit_account_id: string;
+  journal_entry_id: string | null;
+  receipt_date: string;
+  payer_name: string;
+  payer_type: string;
+  amount: string;
+  receipt_mode: string;
+  reference_number: string | null;
+  description: string;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OtherIncomeReceiptPayload = {
+  receipt_date: string;
+  payer_name: string;
+  payer_type: string;
+  income_account_id: string;
+  deposit_account_id: string;
+  amount: string;
+  receipt_mode: string;
   reference_number?: string | null;
   description: string;
   notes?: string | null;
@@ -1654,7 +1758,7 @@ export function getFlatLedger(
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
     if (value) {
-      params.set(key, value);
+      params.set(key, String(value));
     }
   });
   const query = params.toString();
@@ -1864,15 +1968,15 @@ export function listInvoices(
   tenantId: string,
   societyId: string,
   filters: InvoiceListFilters = {}
-): Promise<Invoice[]> {
+): Promise<PaginatedResponse<Invoice>> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
     if (value) {
-      params.set(key, value);
+      params.set(key, String(value));
     }
   });
   const query = params.toString();
-  return tenantApiRequest<Invoice[]>(
+  return tenantApiRequest<PaginatedResponse<Invoice>>(
     `/societies/${societyId}/invoices${query ? `?${query}` : ""}`,
     token,
     tenantId
@@ -1887,13 +1991,57 @@ export function listPayments(
   return tenantApiRequest<Payment[]>(`/societies/${societyId}/payments`, token, tenantId);
 }
 
+export function listPaymentRegister(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  filters: PaymentRegisterFilters = {}
+): Promise<PaginatedResponse<PaymentRegisterRow>> {
+  const params = new URLSearchParams();
+  if (filters.flat_id) params.set("flat_id", filters.flat_id);
+  if (filters.flat_number) params.set("flat_number", filters.flat_number);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.payment_mode) params.set("payment_mode", filters.payment_mode);
+  if (filters.payment_date_from) params.set("payment_date_from", filters.payment_date_from);
+  if (filters.payment_date_to) params.set("payment_date_to", filters.payment_date_to);
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.page_size) params.set("page_size", String(filters.page_size));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return tenantApiRequest<PaginatedResponse<PaymentRegisterRow>>(
+    `/societies/${societyId}/payments/register${suffix}`,
+    token,
+    tenantId
+  );
+}
+
+export function exportPaymentRegister(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  filters: PaymentRegisterFilters,
+  exportFormat: "xlsx" | "pdf"
+): Promise<Blob> {
+  const params = new URLSearchParams({ export_format: exportFormat });
+  if (filters.flat_id) params.set("flat_id", filters.flat_id);
+  if (filters.flat_number) params.set("flat_number", filters.flat_number);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.payment_mode) params.set("payment_mode", filters.payment_mode);
+  if (filters.payment_date_from) params.set("payment_date_from", filters.payment_date_from);
+  if (filters.payment_date_to) params.set("payment_date_to", filters.payment_date_to);
+  return tenantApiBlobRequest(
+    `/societies/${societyId}/payments/register/export?${params.toString()}`,
+    token,
+    tenantId
+  );
+}
+
 export function createPayment(
   token: string,
   tenantId: string,
   societyId: string,
   payload: PaymentPayload
-): Promise<Payment> {
-  return tenantApiRequest<Payment>(`/societies/${societyId}/payments`, token, tenantId, {
+): Promise<PaymentDetail> {
+  return tenantApiRequest<PaymentDetail>(`/societies/${societyId}/payments`, token, tenantId, {
     method: "POST",
     body: JSON.stringify(payload)
   });
@@ -1905,8 +2053,8 @@ export function reversePayment(
   societyId: string,
   paymentId: string,
   reason: string
-): Promise<Payment> {
-  return tenantApiRequest<Payment>(`/societies/${societyId}/payments/${paymentId}/reverse`, token, tenantId, {
+): Promise<PaymentDetail> {
+  return tenantApiRequest<PaymentDetail>(`/societies/${societyId}/payments/${paymentId}/reverse`, token, tenantId, {
     method: "POST",
     body: JSON.stringify({ reason })
   });
@@ -2806,6 +2954,53 @@ export function createAccountTransfer(
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function listOtherIncomeReceipts(
+  token: string,
+  tenantId: string,
+  societyId: string
+): Promise<OtherIncomeReceipt[]> {
+  return tenantApiRequest<OtherIncomeReceipt[]>(
+    `/societies/${societyId}/other-income-receipts`,
+    token,
+    tenantId
+  );
+}
+
+export function createOtherIncomeReceipt(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  payload: OtherIncomeReceiptPayload
+): Promise<OtherIncomeReceipt> {
+  return tenantApiRequest<OtherIncomeReceipt>(
+    `/societies/${societyId}/other-income-receipts`,
+    token,
+    tenantId,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function reverseOtherIncomeReceipt(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  receiptId: string,
+  reason: string
+): Promise<OtherIncomeReceipt> {
+  return tenantApiRequest<OtherIncomeReceipt>(
+    `/societies/${societyId}/other-income-receipts/${receiptId}/reverse`,
+    token,
+    tenantId,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    }
+  );
 }
 
 export function getAccountLedger(

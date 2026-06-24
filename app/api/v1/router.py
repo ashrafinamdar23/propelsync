@@ -27,6 +27,7 @@ from app.api.v1.endpoints import (
     outstanding,
     owners,
     operational_reports,
+    other_income,
     payments,
     platform,
     residents,
@@ -69,6 +70,7 @@ api_router.include_router(late_fees.router, tags=["late-fees"])
 api_router.include_router(lease_agreements.router, tags=["lease-agreements"])
 api_router.include_router(outstanding.router, tags=["outstanding"])
 api_router.include_router(operational_reports.router, tags=["reports"])
+api_router.include_router(other_income.router, tags=["other-income"])
 api_router.include_router(payments.router, tags=["payments"])
 api_router.include_router(owners.router, tags=["owners"])
 api_router.include_router(flat_ownerships.router, tags=["flat-ownerships"])

@@ -2,10 +2,11 @@ import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Building,
     ChartOfAccount,
     Flat,
     Invoice,
@@ -17,10 +18,12 @@ from app.models import (
     PaymentAllocation,
     Society,
     User,
+    Wing,
 )
-from app.schemas.payment import PaymentAllocationCreate, PaymentCreate, PaymentReverseRequest
+from app.schemas.payment import PaymentAllocationCreate, PaymentCreate, PaymentRegisterRow, PaymentReverseRequest
 from app.services.audit import record_audit_log
 from app.services.late_fees import auto_cancel_invalid_unpaid_penalties
+from app.services.report_exports import ExportTable
 from app.tenants.context import TenantContext
 
 
@@ -203,6 +206,188 @@ def list_payments(
             )
             .order_by(Payment.payment_date.desc(), Payment.created_at.desc())
         )
+    )
+
+
+def payment_register_base_statement(
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    flat_number: str | None = None,
+    status: str | None = None,
+    payment_mode: str | None = None,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
+):
+    statement = (
+        select(Payment, Flat.flat_number, Flat.building_id, Building.name, Flat.wing_id, Wing.name)
+        .join(Flat, Flat.id == Payment.flat_id)
+        .join(Building, Building.id == Flat.building_id)
+        .outerjoin(Wing, Wing.id == Flat.wing_id)
+        .where(
+            Payment.tenant_id == tenant_context.tenant_id,
+            Payment.society_id == society_id,
+            Flat.tenant_id == tenant_context.tenant_id,
+            Flat.society_id == society_id,
+            Building.tenant_id == tenant_context.tenant_id,
+            Building.society_id == society_id,
+        )
+    )
+    if flat_id is not None:
+        statement = statement.where(Payment.flat_id == flat_id)
+    if flat_number:
+        statement = statement.where(Flat.flat_number.ilike(f"%{flat_number}%"))
+    if status:
+        statement = statement.where(Payment.status == status)
+    if payment_mode:
+        statement = statement.where(Payment.payment_mode == payment_mode)
+    if payment_date_from is not None:
+        statement = statement.where(Payment.payment_date >= payment_date_from)
+    if payment_date_to is not None:
+        statement = statement.where(Payment.payment_date <= payment_date_to)
+    return statement
+
+
+def payment_register_row_from_record(
+    record: tuple[Payment, str, uuid.UUID, str, uuid.UUID | None, str | None],
+) -> PaymentRegisterRow:
+    payment, flat_number, building_id, building_name, wing_id, wing_name = record
+    return PaymentRegisterRow(
+        id=payment.id,
+        tenant_id=payment.tenant_id,
+        society_id=payment.society_id,
+        flat_id=payment.flat_id,
+        flat_number=flat_number,
+        building_id=building_id,
+        building_name=building_name,
+        wing_id=wing_id,
+        wing_name=wing_name,
+        deposit_account_id=payment.deposit_account_id,
+        journal_entry_id=payment.journal_entry_id,
+        payment_date=payment.payment_date,
+        amount=payment.amount,
+        unapplied_amount=payment.unapplied_amount,
+        payment_mode=payment.payment_mode,
+        reference_number=payment.reference_number,
+        status=payment.status,
+        notes=payment.notes,
+        created_at=payment.created_at,
+        updated_at=payment.updated_at,
+    )
+
+
+def list_payment_register_paginated(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    flat_number: str | None = None,
+    status: str | None = None,
+    payment_mode: str | None = None,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[PaymentRegisterRow], int]:
+    ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    base_statement = payment_register_base_statement(
+        tenant_context=tenant_context,
+        society_id=society_id,
+        flat_id=flat_id,
+        flat_number=flat_number,
+        status=status,
+        payment_mode=payment_mode,
+        payment_date_from=payment_date_from,
+        payment_date_to=payment_date_to,
+    )
+    total_items = int(session.scalar(select(func.count()).select_from(base_statement.subquery())) or 0)
+    records = list(
+        session.execute(
+            base_statement.order_by(Payment.payment_date.desc(), Payment.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return [payment_register_row_from_record(record) for record in records], total_items
+
+
+def list_payment_register_for_export(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    flat_number: str | None = None,
+    status: str | None = None,
+    payment_mode: str | None = None,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
+) -> list[PaymentRegisterRow]:
+    ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    records = list(
+        session.execute(
+            payment_register_base_statement(
+                tenant_context=tenant_context,
+                society_id=society_id,
+                flat_id=flat_id,
+                flat_number=flat_number,
+                status=status,
+                payment_mode=payment_mode,
+                payment_date_from=payment_date_from,
+                payment_date_to=payment_date_to,
+            ).order_by(Payment.payment_date.desc(), Payment.created_at.desc())
+        ).all()
+    )
+    return [payment_register_row_from_record(record) for record in records]
+
+
+def payment_register_export_table(
+    rows: list[PaymentRegisterRow],
+    *,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
+) -> ExportTable:
+    subtitle = "All dates"
+    if payment_date_from and payment_date_to:
+        subtitle = f"{payment_date_from.isoformat()} to {payment_date_to.isoformat()}"
+    elif payment_date_from:
+        subtitle = f"From {payment_date_from.isoformat()}"
+    elif payment_date_to:
+        subtitle = f"Until {payment_date_to.isoformat()}"
+    return ExportTable(
+        title="Payment Register",
+        subtitle=subtitle,
+        headers=["Date", "Flat", "Building", "Wing", "Mode", "Reference", "Amount", "Unapplied", "Status"],
+        rows=[
+            [
+                row.payment_date.isoformat(),
+                row.flat_number,
+                row.building_name,
+                row.wing_name or "",
+                row.payment_mode,
+                row.reference_number or "",
+                row.amount,
+                row.unapplied_amount,
+                row.status,
+            ]
+            for row in rows
+        ],
+        footer_rows=[
+            [
+                "Totals",
+                "",
+                "",
+                "",
+                "",
+                "",
+                sum((row.amount for row in rows), Decimal("0.00")),
+                sum((row.unapplied_amount for row in rows), Decimal("0.00")),
+                "",
+            ]
+        ],
+        sheet_name="Payments",
     )
 
 
@@ -501,6 +686,7 @@ def create_payment(
         original_invoice_ids=list(invoices),
         actor=actor,
     )
+    payment.auto_cancelled_penalty_invoice_ids = auto_cancelled_penalty_invoice_ids
 
     post_payment_journal(
         session,

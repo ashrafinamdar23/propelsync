@@ -45,6 +45,7 @@ import {
   createManagedUser,
   createManualInvoice,
   createOpeningBalanceJournal,
+  createOtherIncomeReceipt,
   createOwner,
   createPayment,
   createResident,
@@ -55,6 +56,7 @@ import {
   exportBalanceSheetReport,
   exportIncomeExpenseReport,
   exportAsOfOperationalReport,
+  exportPaymentRegister,
   exportPeriodOperationalReport,
   getCurrentUser,
   getAccountLedger,
@@ -99,8 +101,9 @@ import {
   listLateFeeRules,
   listLeaseAgreements,
   listManagedUsers,
+  listOtherIncomeReceipts,
+  listPaymentRegister,
   listOwners,
-  listPayments,
   listResidents,
   listScheduledJobRuns,
   listSocieties,
@@ -113,6 +116,7 @@ import {
   previewInvoiceGeneration,
   previewLateFees,
   reverseJournal,
+  reverseOtherIncomeReceipt,
   reversePayment,
   runScheduledDueJobs,
   suspendBuilding,
@@ -200,11 +204,14 @@ import {
   type OpeningBalanceJournalPayload,
   type ManualInvoicePayload,
   type MyAccess,
+  type OtherIncomeReceipt,
+  type OtherIncomeReceiptPayload,
   type Owner,
   type OwnerPayload,
   type OutstandingSummary,
-  type Payment,
+  type PaymentDetail,
   type PaymentPayload,
+  type PaymentRegisterRow,
   type Resident,
   type ResidentPayload,
   type ScheduledDueWork,
@@ -240,6 +247,7 @@ type Workspace =
   | "operationalReports"
   | "journals"
   | "accountTransfers"
+  | "otherIncome"
   | "chargeTypes"
   | "expenseCategories"
   | "expenses"
@@ -252,6 +260,7 @@ type Workspace =
   | "manualInvoices"
   | "invoices"
   | "payments"
+  | "paymentRegister"
   | "outstanding"
   | "vendors"
   | "wings"
@@ -401,6 +410,19 @@ const accountTransferFormDefaults = {
   notes: ""
 };
 
+const otherIncomeFormDefaults = {
+  receipt_date: "",
+  payer_name: "",
+  payer_type: "bank",
+  income_account_id: "",
+  deposit_account_id: "",
+  amount: "",
+  receipt_mode: "bank_transfer",
+  reference_number: "",
+  description: "",
+  notes: ""
+};
+
 const accountLedgerFilterDefaults = {
   account_id: "",
   date_from: "",
@@ -500,7 +522,9 @@ const invoiceFilterDefaults = {
   invoice_date_from: "",
   invoice_date_to: "",
   flat_id: "",
-  status: ""
+  status: "",
+  page: 1,
+  page_size: 50
 };
 
 const paymentFormDefaults = {
@@ -514,7 +538,20 @@ const paymentFormDefaults = {
   notes: ""
 };
 
+const paymentRegisterFilterDefaults = {
+  month: "",
+  payment_date_from: "",
+  payment_date_to: "",
+  flat_number: "",
+  status: "",
+  payment_mode: "",
+  page: 1,
+  page_size: 50
+};
+
 const paymentModes = ["cash", "bank_transfer", "cheque", "upi", "card", "other"];
+const paymentStatuses = ["received", "reversed"];
+const otherIncomePayerTypes = ["bank", "vendor", "resident", "external_party", "other"];
 
 const chartOfAccountFormDefaults = {
   parent_account_id: "",
@@ -723,6 +760,17 @@ function buildOldestFirstPaymentAllocations(openInvoices: Invoice[], amount: str
     }
   });
   return allocations;
+}
+
+function paymentInvoiceLabel(invoice: Invoice | undefined): string {
+  if (!invoice) {
+    return "Invoice";
+  }
+  const note = invoice.notes?.toLowerCase() ?? "";
+  if (note.includes("late fee") || note.includes("penalty")) {
+    return "Penalty";
+  }
+  return "Invoice";
 }
 
 function currentMonthInvoiceGenerationDefaults(): InvoiceGenerationPayload {
@@ -956,6 +1004,8 @@ function App() {
   const [isLoadingInvoiceSequence, setIsLoadingInvoiceSequence] = useState(false);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [invoiceTotalItems, setInvoiceTotalItems] = useState(0);
+  const [invoiceTotalPages, setInvoiceTotalPages] = useState(0);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
@@ -973,13 +1023,20 @@ function App() {
     billing_period_start: todayIsoDate(),
     billing_period_end: todayIsoDate()
   });
-  const [payments, setPayments] = useState<Payment[]>([]);
   const [paymentForm, setPaymentForm] = useState({
     ...paymentFormDefaults,
     payment_date: todayIsoDate()
   });
   const [paymentAllocations, setPaymentAllocations] = useState<Record<string, string>>({});
-  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
+  const [lastPaymentResult, setLastPaymentResult] = useState<{
+    payment: PaymentDetail;
+    invoices: Invoice[];
+  } | null>(null);
+  const [paymentRegisterRows, setPaymentRegisterRows] = useState<PaymentRegisterRow[]>([]);
+  const [paymentRegisterFilters, setPaymentRegisterFilters] = useState(paymentRegisterFilterDefaults);
+  const [paymentRegisterTotalItems, setPaymentRegisterTotalItems] = useState(0);
+  const [paymentRegisterTotalPages, setPaymentRegisterTotalPages] = useState(0);
+  const [isLoadingPaymentRegister, setIsLoadingPaymentRegister] = useState(false);
   const [outstandingAsOfDate, setOutstandingAsOfDate] = useState(todayIsoDate());
   const [outstandingSummary, setOutstandingSummary] = useState<OutstandingSummary | null>(null);
   const [isLoadingOutstanding, setIsLoadingOutstanding] = useState(false);
@@ -1008,6 +1065,12 @@ function App() {
     transfer_date: todayIsoDate()
   });
   const [isLoadingAccountTransfers, setIsLoadingAccountTransfers] = useState(false);
+  const [otherIncomeReceipts, setOtherIncomeReceipts] = useState<OtherIncomeReceipt[]>([]);
+  const [otherIncomeForm, setOtherIncomeForm] = useState({
+    ...otherIncomeFormDefaults,
+    receipt_date: todayIsoDate()
+  });
+  const [isLoadingOtherIncomeReceipts, setIsLoadingOtherIncomeReceipts] = useState(false);
   const [accountLedgerFilters, setAccountLedgerFilters] = useState(accountLedgerFilterDefaults);
   const [accountLedger, setAccountLedger] = useState<AccountLedger | null>(null);
   const [isLoadingAccountLedger, setIsLoadingAccountLedger] = useState(false);
@@ -1139,8 +1202,10 @@ function App() {
           "trialBalance",
           "incomeExpense",
           "balanceSheet",
+          "paymentRegister",
           "journals",
           "accountTransfers",
+          "otherIncome",
           "chargeTypes",
           "expenseCategories",
           "expenses",
@@ -1176,6 +1241,7 @@ function App() {
   const isOpeningBalanceFormOpen = formWorkspace === "openingBalances";
   const isJournalFormOpen = formWorkspace === "journals";
   const isAccountTransferFormOpen = formWorkspace === "accountTransfers";
+  const isOtherIncomeFormOpen = formWorkspace === "otherIncome";
   const isChargeTypeFormOpen = formWorkspace === "chargeTypes" || Boolean(editingChargeTypeId);
   const isExpenseCategoryFormOpen =
     formWorkspace === "expenseCategories" || Boolean(editingExpenseCategoryId);
@@ -1202,6 +1268,7 @@ function App() {
     (workspace === "openingBalances" && isOpeningBalanceFormOpen) ||
     (workspace === "journals" && isJournalFormOpen) ||
     (workspace === "accountTransfers" && isAccountTransferFormOpen) ||
+    (workspace === "otherIncome" && isOtherIncomeFormOpen) ||
     (workspace === "chargeTypes" && isChargeTypeFormOpen) ||
     (workspace === "expenseCategories" && isExpenseCategoryFormOpen) ||
     (workspace === "expenses" && isExpenseFormOpen) ||
@@ -1237,6 +1304,8 @@ function App() {
                   ? "Add Journal"
                   : workspace === "accountTransfers"
                     ? "Add Transfer"
+                    : workspace === "otherIncome"
+                      ? "Add Receipt"
                     : workspace === "chargeTypes"
                       ? "Add Charge Type"
                 : workspace === "expenseCategories"
@@ -1275,6 +1344,7 @@ function App() {
     (workspace === "openingBalances" && Boolean(selectedSocietyId)) ||
     (workspace === "journals" && Boolean(selectedSocietyId)) ||
     (workspace === "accountTransfers" && Boolean(selectedSocietyId)) ||
+    (workspace === "otherIncome" && Boolean(selectedSocietyId)) ||
     (workspace === "chargeTypes" && Boolean(selectedSocietyId)) ||
     (workspace === "expenseCategories" && Boolean(selectedSocietyId)) ||
     (workspace === "expenses" && Boolean(selectedSocietyId)) ||
@@ -1362,6 +1432,13 @@ function App() {
     () =>
       chartOfAccounts.filter(
         (account) => account.status === "active" && account.account_type === "expense"
+      ),
+    [chartOfAccounts]
+  );
+  const activeIncomeAccounts = useMemo(
+    () =>
+      chartOfAccounts.filter(
+        (account) => account.status === "active" && account.account_type === "income"
       ),
     [chartOfAccounts]
   );
@@ -1482,6 +1559,10 @@ function App() {
     activeAssetAccounts.find((account) => account.id === accountTransferForm.from_account_id) ?? null;
   const selectedTransferToAccount =
     activeAssetAccounts.find((account) => account.id === accountTransferForm.to_account_id) ?? null;
+  const selectedOtherIncomeAccount =
+    activeIncomeAccounts.find((account) => account.id === otherIncomeForm.income_account_id) ?? null;
+  const selectedOtherIncomeDepositAccount =
+    activeAssetAccounts.find((account) => account.id === otherIncomeForm.deposit_account_id) ?? null;
 
   const incomeAccounts = useMemo(
     () =>
@@ -1921,7 +2002,8 @@ function App() {
   ) => {
     if (!tenantId || !societyId) {
       setInvoices([]);
-      setPayments([]);
+      setInvoiceTotalItems(0);
+      setInvoiceTotalPages(0);
       setSelectedInvoiceId("");
       setSelectedInvoiceDetail(null);
       return;
@@ -1934,10 +2016,21 @@ function App() {
         flat_id: filters.flat_id || undefined,
         status: filters.status || undefined,
         invoice_date_from: filters.invoice_date_from || undefined,
-        invoice_date_to: filters.invoice_date_to || undefined
+        invoice_date_to: filters.invoice_date_to || undefined,
+        page: filters.page,
+        page_size: filters.page_size
       };
-      const rows = await listInvoices(authToken, tenantId, societyId, requestFilters);
+      const response = await listInvoices(authToken, tenantId, societyId, requestFilters);
+      const rows = response.items;
       setInvoices(rows);
+      setSelectedInvoiceIds((current) => current.filter((invoiceId) => rows.some((invoice) => invoice.id === invoiceId)));
+      setInvoiceTotalItems(response.total_items);
+      setInvoiceTotalPages(response.total_pages);
+      setInvoiceFilters((current) => ({
+        ...current,
+        page: response.page,
+        page_size: response.page_size
+      }));
       setSelectedInvoiceId((current) => {
         if (current && rows.some((invoice) => invoice.id === current)) {
           return current;
@@ -1951,26 +2044,45 @@ function App() {
     }
   }, [invoiceFilters, selectedSocietyId, selectedTenantId, token]);
 
-  const refreshPayments = useCallback(async (
+  const refreshPaymentRegister = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
-    authToken = token
+    authToken = token,
+    filters = paymentRegisterFilters
   ) => {
     if (!tenantId || !societyId) {
-      setPayments([]);
+      setPaymentRegisterRows([]);
+      setPaymentRegisterTotalItems(0);
+      setPaymentRegisterTotalPages(0);
       return;
     }
 
-    setIsLoadingPayments(true);
+    setIsLoadingPaymentRegister(true);
     setError("");
     try {
-      setPayments(await listPayments(authToken, tenantId, societyId));
+      const response = await listPaymentRegister(authToken, tenantId, societyId, {
+        flat_number: filters.flat_number || undefined,
+        status: filters.status || undefined,
+        payment_mode: filters.payment_mode || undefined,
+        payment_date_from: filters.payment_date_from || undefined,
+        payment_date_to: filters.payment_date_to || undefined,
+        page: filters.page,
+        page_size: filters.page_size
+      });
+      setPaymentRegisterRows(response.items);
+      setPaymentRegisterTotalItems(response.total_items);
+      setPaymentRegisterTotalPages(response.total_pages);
+      setPaymentRegisterFilters((current) => ({
+        ...current,
+        page: response.page,
+        page_size: response.page_size
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load payments.");
+      setError(err instanceof Error ? err.message : "Unable to load payment register.");
     } finally {
-      setIsLoadingPayments(false);
+      setIsLoadingPaymentRegister(false);
     }
-  }, [selectedSocietyId, selectedTenantId, token]);
+  }, [paymentRegisterFilters, selectedSocietyId, selectedTenantId, token]);
 
   const refreshVendors = useCallback(async (
     tenantId = selectedTenantId,
@@ -2117,6 +2229,27 @@ function App() {
       setError(err instanceof Error ? err.message : "Unable to load account transfers.");
     } finally {
       setIsLoadingAccountTransfers(false);
+    }
+  }, [selectedSocietyId, selectedTenantId, token]);
+
+  const refreshOtherIncomeReceipts = useCallback(async (
+    tenantId = selectedTenantId,
+    societyId = selectedSocietyId,
+    authToken = token
+  ) => {
+    if (!tenantId || !societyId) {
+      setOtherIncomeReceipts([]);
+      return;
+    }
+
+    setIsLoadingOtherIncomeReceipts(true);
+    setError("");
+    try {
+      setOtherIncomeReceipts(await listOtherIncomeReceipts(authToken, tenantId, societyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load other income receipts.");
+    } finally {
+      setIsLoadingOtherIncomeReceipts(false);
     }
   }, [selectedSocietyId, selectedTenantId, token]);
 
@@ -2487,12 +2620,16 @@ function App() {
       setInvoiceSequence(null);
       setInvoiceSequenceForm(invoiceSequenceFormDefaults);
       setInvoices([]);
+      setPaymentRegisterRows([]);
+      setPaymentRegisterTotalItems(0);
+      setPaymentRegisterTotalPages(0);
       setSelectedInvoiceId("");
       setSelectedInvoiceDetail(null);
       setChartOfAccounts([]);
       setJournals([]);
       setSelectedOpeningBalanceDetail(null);
       setAccountTransfers([]);
+      setOtherIncomeReceipts([]);
       setAccountLedger(null);
       setFlatLedger(null);
       setTrialBalance(null);
@@ -2509,6 +2646,7 @@ function App() {
     void refreshChartOfAccounts(selectedTenantId, selectedSocietyId, token);
     void refreshJournals(selectedTenantId, selectedSocietyId, token);
     void refreshAccountTransfers(selectedTenantId, selectedSocietyId, token);
+    void refreshOtherIncomeReceipts(selectedTenantId, selectedSocietyId, token);
     void refreshChargeTypes(selectedTenantId, selectedSocietyId, token);
     void refreshExpenseCategories(selectedTenantId, selectedSocietyId, token);
     void refreshBillingRules(selectedTenantId, selectedSocietyId, token);
@@ -2516,13 +2654,14 @@ function App() {
     void refreshScheduledJobs(selectedTenantId, selectedSocietyId, token);
     void refreshInvoiceSequence(selectedTenantId, selectedSocietyId, token);
     void refreshInvoices(selectedTenantId, selectedSocietyId, token);
-    void refreshPayments(selectedTenantId, selectedSocietyId, token);
+    void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token);
     void refreshOutstanding(selectedTenantId, selectedSocietyId, token);
   }, [
     refreshBillingRules,
     refreshLateFeeRules,
     refreshScheduledJobs,
     refreshAccountTransfers,
+    refreshOtherIncomeReceipts,
     refreshBuildings,
     refreshChargeTypes,
     refreshChartOfAccounts,
@@ -2532,9 +2671,9 @@ function App() {
     refreshExpenseCategories,
     refreshInvoiceSequence,
     refreshInvoices,
+    refreshPaymentRegister,
     refreshJournals,
     refreshOutstanding,
-    refreshPayments,
     refreshOwners,
     refreshVendors,
     selectedSocietyId,
@@ -2546,6 +2685,10 @@ function App() {
   useEffect(() => {
     setAccountLedger(null);
     setAccountLedgerFilters(accountLedgerFilterDefaults);
+    setPaymentRegisterRows([]);
+    setPaymentRegisterFilters(paymentRegisterFilterDefaults);
+    setPaymentRegisterTotalItems(0);
+    setPaymentRegisterTotalPages(0);
     setFlatLedger(null);
     setFlatLedgerFilters(flatLedgerFilterDefaults);
     setTrialBalance(null);
@@ -3440,6 +3583,7 @@ function App() {
   async function handlePaymentBuildingChange(buildingId: string) {
     setPaymentForm((current) => ({ ...current, building_id: buildingId, flat_id: "" }));
     setPaymentAllocations({});
+    setLastPaymentResult(null);
     if (!selectedTenantId || !selectedSocietyId || !buildingId) {
       setFlats([]);
       return;
@@ -3450,6 +3594,7 @@ function App() {
 
   function handlePaymentFlatChange(flatId: string) {
     setPaymentForm((current) => ({ ...current, flat_id: flatId }));
+    setLastPaymentResult(null);
     const openInvoicesForFlat = invoices
       .filter(
         (invoice) =>
@@ -3529,7 +3674,11 @@ function App() {
     setNotice("");
     try {
       const authToken = await refreshToken();
-      await createPayment(authToken, selectedTenantId, selectedSocietyId, payload);
+      const payment = await createPayment(authToken, selectedTenantId, selectedSocietyId, payload);
+      setLastPaymentResult({
+        payment,
+        invoices: paymentOpenInvoices
+      });
       setPaymentForm({
         ...paymentFormDefaults,
         building_id: paymentForm.building_id,
@@ -3539,35 +3688,12 @@ function App() {
       setPaymentAllocations({});
       setNotice("Payment recorded.");
       await refreshInvoices(selectedTenantId, selectedSocietyId, authToken);
-      await refreshPayments(selectedTenantId, selectedSocietyId, authToken);
       await refreshOutstanding(selectedTenantId, selectedSocietyId, authToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to record payment.");
     } finally {
       setIsSaving(false);
     }
-  }
-
-  function handleReversePayment(payment: Payment) {
-    if (!selectedTenantId || !selectedSocietyId) {
-      setError("Select a tenant and society before reversing payment.");
-      return;
-    }
-    openReasonDialog({
-      title: "Reverse Payment",
-      description: `Record why payment ${payment.reference_number ?? payment.payment_date} is being reversed.`,
-      reasonLabel: "Reversal reason",
-      confirmLabel: "Reverse Payment",
-      errorMessage: "Unable to reverse payment.",
-      onConfirm: async (reason) => {
-        const authToken = await refreshToken();
-        await reversePayment(authToken, selectedTenantId, selectedSocietyId, payment.id, reason);
-        setNotice("Payment reversed.");
-        await refreshInvoices(selectedTenantId, selectedSocietyId, authToken);
-        await refreshPayments(selectedTenantId, selectedSocietyId, authToken);
-        await refreshOutstanding(selectedTenantId, selectedSocietyId, authToken);
-      }
-    });
   }
 
   async function handleChartOfAccountSubmit(event: FormEvent<HTMLFormElement>) {
@@ -3845,6 +3971,72 @@ function App() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function handleOtherIncomeSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTenantId || !selectedSocietyId) {
+      setError("Select a tenant and society before recording other income.");
+      return;
+    }
+
+    const payload: OtherIncomeReceiptPayload = {
+      receipt_date: otherIncomeForm.receipt_date,
+      payer_name: otherIncomeForm.payer_name.trim(),
+      payer_type: otherIncomeForm.payer_type,
+      income_account_id: otherIncomeForm.income_account_id,
+      deposit_account_id: otherIncomeForm.deposit_account_id,
+      amount: otherIncomeForm.amount,
+      receipt_mode: otherIncomeForm.receipt_mode,
+      reference_number: nullableText(otherIncomeForm.reference_number),
+      description: otherIncomeForm.description.trim(),
+      notes: nullableText(otherIncomeForm.notes)
+    };
+
+    setIsSaving(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const authToken = await refreshToken();
+      const receipt = await createOtherIncomeReceipt(authToken, selectedTenantId, selectedSocietyId, payload);
+      setOtherIncomeForm({ ...otherIncomeFormDefaults, receipt_date: todayIsoDate() });
+      setFormWorkspace(null);
+      setNotice(`Other income receipt recorded for ${receipt.amount}.`);
+      await refreshOtherIncomeReceipts(selectedTenantId, selectedSocietyId, authToken);
+      await refreshJournals(selectedTenantId, selectedSocietyId, authToken);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record other income receipt.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function handleOtherIncomeReverse(receipt: OtherIncomeReceipt) {
+    if (!selectedTenantId || !selectedSocietyId || receipt.status === "reversed") {
+      return;
+    }
+
+    openReasonDialog({
+      title: "Reverse Other Income Receipt",
+      description: `Record why the receipt from ${receipt.payer_name} is being reversed.`,
+      reasonLabel: "Reversal reason",
+      confirmLabel: "Reverse Receipt",
+      errorMessage: "Unable to reverse other income receipt.",
+      onConfirm: async (reason) => {
+        const authToken = await refreshToken();
+        const reversed = await reverseOtherIncomeReceipt(
+          authToken,
+          selectedTenantId,
+          selectedSocietyId,
+          receipt.id,
+          reason
+        );
+        setNotice(`Other income receipt reversed: ${reversed.payer_name}.`);
+        await refreshOtherIncomeReceipts(selectedTenantId, selectedSocietyId, authToken);
+        await refreshJournals(selectedTenantId, selectedSocietyId, authToken);
+      }
+    });
   }
 
   async function handleAccountLedgerSubmit(event: FormEvent<HTMLFormElement>) {
@@ -4169,6 +4361,61 @@ function App() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function handlePaymentRegisterExport(exportFormat: "xlsx" | "pdf") {
+    if (!selectedTenantId || !selectedSocietyId) {
+      setError("Select a tenant and society before exporting payments.");
+      return;
+    }
+
+    setIsSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const authToken = await refreshToken();
+      const blob = await exportPaymentRegister(
+        authToken,
+        selectedTenantId,
+        selectedSocietyId,
+        {
+          flat_number: paymentRegisterFilters.flat_number || undefined,
+          status: paymentRegisterFilters.status || undefined,
+          payment_mode: paymentRegisterFilters.payment_mode || undefined,
+          payment_date_from: paymentRegisterFilters.payment_date_from || undefined,
+          payment_date_to: paymentRegisterFilters.payment_date_to || undefined
+        },
+        exportFormat
+      );
+      downloadBlob(blob, `payment-register.${exportFormat}`);
+      setNotice(`Payment register ${exportFormat.toUpperCase()} exported.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to export payment register.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function handlePaymentRegisterReverse(payment: PaymentRegisterRow) {
+    if (!selectedTenantId || !selectedSocietyId) {
+      setError("Select a tenant and society before reversing payment.");
+      return;
+    }
+    openReasonDialog({
+      title: "Reverse Payment",
+      description: `Record why payment ${payment.reference_number ?? payment.payment_date} is being reversed.`,
+      reasonLabel: "Reversal reason",
+      confirmLabel: "Reverse Payment",
+      errorMessage: "Unable to reverse payment.",
+      onConfirm: async (reason) => {
+        const authToken = await refreshToken();
+        await reversePayment(authToken, selectedTenantId, selectedSocietyId, payment.id, reason);
+        setNotice("Payment reversed.");
+        await refreshPaymentRegister(selectedTenantId, selectedSocietyId, authToken);
+        await refreshInvoices(selectedTenantId, selectedSocietyId, authToken);
+        await refreshOutstanding(selectedTenantId, selectedSocietyId, authToken);
+      }
+    });
   }
 
   async function handleBuildingFloorSubmit(event: FormEvent<HTMLFormElement>) {
@@ -5490,7 +5737,7 @@ function App() {
     setInvoiceSequence(null);
     setInvoiceSequenceForm(invoiceSequenceFormDefaults);
     setInvoices([]);
-    setPayments([]);
+    setLastPaymentResult(null);
     setOutstandingSummary(null);
     setSelectedInvoiceId("");
     setSelectedInvoiceDetail(null);
@@ -5561,7 +5808,7 @@ function App() {
     setInvoiceSequence(null);
     setInvoiceSequenceForm(invoiceSequenceFormDefaults);
     setInvoices([]);
-    setPayments([]);
+    setLastPaymentResult(null);
     setOutstandingSummary(null);
     setSelectedInvoiceId("");
     setSelectedInvoiceDetail(null);
@@ -5700,6 +5947,8 @@ function App() {
       setJournalForm(journalFormDefaults());
     } else if (workspace === "accountTransfers") {
       setAccountTransferForm({ ...accountTransferFormDefaults, transfer_date: todayIsoDate() });
+    } else if (workspace === "otherIncome") {
+      setOtherIncomeForm({ ...otherIncomeFormDefaults, receipt_date: todayIsoDate() });
     } else if (workspace === "chargeTypes") {
       setEditingChargeTypeId(null);
       setChargeTypeForm(chargeTypeFormDefaults);
@@ -5776,6 +6025,8 @@ function App() {
       setJournalForm(journalFormDefaults());
     } else if (workspace === "accountTransfers") {
       setAccountTransferForm({ ...accountTransferFormDefaults, transfer_date: todayIsoDate() });
+    } else if (workspace === "otherIncome") {
+      setOtherIncomeForm({ ...otherIncomeFormDefaults, receipt_date: todayIsoDate() });
     } else if (workspace === "chargeTypes") {
       setEditingChargeTypeId(null);
       setChargeTypeForm(chargeTypeFormDefaults);
@@ -6127,7 +6378,12 @@ function App() {
       return;
     }
     if (workspace === "payments") {
-      void refreshPayments(selectedTenantId, selectedSocietyId);
+      void refreshInvoices(selectedTenantId, selectedSocietyId);
+      void refreshOutstanding(selectedTenantId, selectedSocietyId);
+      return;
+    }
+    if (workspace === "paymentRegister") {
+      void refreshPaymentRegister(selectedTenantId, selectedSocietyId);
       return;
     }
     if (workspace === "outstanding") {
@@ -6152,6 +6408,10 @@ function App() {
     }
     if (workspace === "accountTransfers") {
       void refreshAccountTransfers(selectedTenantId, selectedSocietyId);
+      return;
+    }
+    if (workspace === "otherIncome") {
+      void refreshOtherIncomeReceipts(selectedTenantId, selectedSocietyId);
       return;
     }
     if (workspace === "accountLedgers") {
@@ -6217,7 +6477,6 @@ function App() {
     void refreshLateFeeRules(selectedTenantId, selectedSocietyId);
     void refreshScheduledJobs(selectedTenantId, selectedSocietyId);
     void refreshInvoices(selectedTenantId, selectedSocietyId);
-    void refreshPayments(selectedTenantId, selectedSocietyId);
     void refreshOutstanding(selectedTenantId, selectedSocietyId);
     void refreshOwners(selectedTenantId, selectedSocietyId);
     void refreshVendors(selectedTenantId, selectedSocietyId);
@@ -6611,6 +6870,16 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item ${workspace === "otherIncome" ? "active" : ""}`}
+                  disabled={!selectedSocietyId}
+                  onClick={() => setWorkspace("otherIncome")}
+                  title="Other Income"
+                >
+                  <span className="nav-icon">R</span>
+                  <span className="nav-text">Other Income</span>
+                </button>
+                <button
+                  type="button"
                   className={`nav-item ${workspace === "chargeTypes" ? "active" : ""}`}
                   disabled={!selectedSocietyId}
                   onClick={() => setWorkspace("chargeTypes")}
@@ -6778,6 +7047,16 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item ${workspace === "paymentRegister" ? "active" : ""}`}
+                  disabled={!selectedSocietyId}
+                  onClick={() => setWorkspace("paymentRegister")}
+                  title="Payment Register"
+                >
+                  <span className="nav-icon">P</span>
+                  <span className="nav-text">Payment Register</span>
+                </button>
+                <button
+                  type="button"
                   className={`nav-item ${workspace === "incomeExpense" ? "active" : ""}`}
                   disabled={!selectedSocietyId}
                   onClick={() => setWorkspace("incomeExpense")}
@@ -6836,6 +7115,8 @@ function App() {
                           ? "Trial Balance"
                         : workspace === "operationalReports"
                           ? "Operational Reports"
+                        : workspace === "paymentRegister"
+                          ? "Payment Register"
                             : workspace === "incomeExpense"
                               ? "Income vs Expense"
                             : workspace === "balanceSheet"
@@ -6844,6 +7125,8 @@ function App() {
                           ? "Journal Entries"
                           : workspace === "accountTransfers"
                             ? "Account Transfers"
+                            : workspace === "otherIncome"
+                              ? "Other Income Receipts"
                             : workspace === "chargeTypes"
                               ? "Charge Type Management"
                       : workspace === "expenseCategories"
@@ -10069,6 +10352,268 @@ function App() {
                 </section>
               ) : null}
             </section>
+          ) : workspace === "otherIncome" ? (
+            <section className={`workspace ${isOtherIncomeFormOpen ? "task-only" : "registry-only"}`}>
+              {isOtherIncomeFormOpen ? (
+                <form className="panel-form" onSubmit={handleOtherIncomeSubmit}>
+                  <div className="form-title-row">
+                    <h2>Record Other Income</h2>
+                  </div>
+
+                  <div className="context-card">
+                    <span>Selected Society</span>
+                    <strong>{selectedSociety?.name ?? "Select a society"}</strong>
+                  </div>
+
+                  <div className="form-grid">
+                    <label>
+                      Receipt Date
+                      <input
+                        required
+                        type="date"
+                        value={otherIncomeForm.receipt_date}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, receipt_date: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Payer Type
+                      <select
+                        required
+                        value={otherIncomeForm.payer_type}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, payer_type: event.target.value })
+                        }
+                      >
+                        {otherIncomePayerTypes.map((payerType) => (
+                          <option key={payerType} value={payerType}>
+                            {payerType.replace("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <label>
+                    Payer Name
+                    <input
+                      required
+                      maxLength={255}
+                      value={otherIncomeForm.payer_name}
+                      onChange={(event) =>
+                        setOtherIncomeForm({ ...otherIncomeForm, payer_name: event.target.value })
+                      }
+                    />
+                  </label>
+
+                  <div className="form-grid">
+                    <label>
+                      Income Account
+                      <select
+                        required
+                        value={otherIncomeForm.income_account_id}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, income_account_id: event.target.value })
+                        }
+                      >
+                        <option value="">Select income account</option>
+                        {activeIncomeAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.account_code} - {account.account_name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Deposit Account
+                      <select
+                        required
+                        value={otherIncomeForm.deposit_account_id}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, deposit_account_id: event.target.value })
+                        }
+                      >
+                        <option value="">Select bank/cash account</option>
+                        {activeAssetAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.account_code} - {account.account_name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="form-grid">
+                    <label>
+                      Amount
+                      <input
+                        required
+                        min="0.01"
+                        step="0.01"
+                        type="number"
+                        value={otherIncomeForm.amount}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, amount: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Receipt Mode
+                      <select
+                        required
+                        value={otherIncomeForm.receipt_mode}
+                        onChange={(event) =>
+                          setOtherIncomeForm({ ...otherIncomeForm, receipt_mode: event.target.value })
+                        }
+                      >
+                        {paymentModes.map((mode) => (
+                          <option key={mode} value={mode}>
+                            {mode}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <label>
+                    Reference Number
+                    <input
+                      maxLength={100}
+                      value={otherIncomeForm.reference_number}
+                      onChange={(event) =>
+                        setOtherIncomeForm({ ...otherIncomeForm, reference_number: event.target.value })
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Description
+                    <input
+                      required
+                      maxLength={255}
+                      value={otherIncomeForm.description}
+                      onChange={(event) =>
+                        setOtherIncomeForm({ ...otherIncomeForm, description: event.target.value })
+                      }
+                    />
+                  </label>
+
+                  <div className="context-card">
+                    <span>Posting</span>
+                    <strong>
+                      Debit {selectedOtherIncomeDepositAccount?.account_name ?? "deposit account"} / Credit{" "}
+                      {selectedOtherIncomeAccount?.account_name ?? "income account"}
+                    </strong>
+                  </div>
+
+                  <label>
+                    Notes
+                    <textarea
+                      value={otherIncomeForm.notes}
+                      onChange={(event) =>
+                        setOtherIncomeForm({ ...otherIncomeForm, notes: event.target.value })
+                      }
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={
+                      isSaving ||
+                      !selectedTenantId ||
+                      !selectedSocietyId ||
+                      !otherIncomeForm.receipt_date ||
+                      !otherIncomeForm.payer_name.trim() ||
+                      !otherIncomeForm.income_account_id ||
+                      !otherIncomeForm.deposit_account_id ||
+                      !otherIncomeForm.description.trim() ||
+                      !Number(otherIncomeForm.amount)
+                    }
+                  >
+                    {isSaving ? "Recording" : "Record Receipt"}
+                  </button>
+                </form>
+              ) : null}
+
+              {!isOtherIncomeFormOpen ? (
+                <section className="data-panel">
+                  <div className="section-heading">
+                    <h2>Other Income Registry</h2>
+                    <span className="record-count">
+                      {isLoadingOtherIncomeReceipts ? "Loading" : `${otherIncomeReceipts.length} records`}
+                    </span>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Payer</th>
+                          <th>Income Account</th>
+                          <th>Deposit Account</th>
+                          <th>Amount</th>
+                          <th>Mode</th>
+                          <th>Reference</th>
+                          <th>Status</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {otherIncomeReceipts.map((receipt) => {
+                          const incomeAccount = chartOfAccounts.find(
+                            (account) => account.id === receipt.income_account_id
+                          );
+                          const depositAccount = chartOfAccounts.find(
+                            (account) => account.id === receipt.deposit_account_id
+                          );
+                          return (
+                            <tr key={receipt.id}>
+                              <td>{receipt.receipt_date}</td>
+                              <td>
+                                <strong>{receipt.payer_name}</strong>
+                                <span className="table-subtext">{receipt.payer_type.replace("_", " ")}</span>
+                              </td>
+                              <td>
+                                {incomeAccount
+                                  ? `${incomeAccount.account_code} - ${incomeAccount.account_name}`
+                                  : ""}
+                              </td>
+                              <td>
+                                {depositAccount
+                                  ? `${depositAccount.account_code} - ${depositAccount.account_name}`
+                                  : ""}
+                              </td>
+                              <td>{receipt.amount}</td>
+                              <td>{receipt.receipt_mode}</td>
+                              <td>{receipt.reference_number ?? ""}</td>
+                              <td><StatusPill status={receipt.status} /></td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="secondary compact"
+                                  disabled={receipt.status === "reversed"}
+                                  onClick={() => handleOtherIncomeReverse(receipt)}
+                                >
+                                  Reverse
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {!otherIncomeReceipts.length && !isLoadingOtherIncomeReceipts ? (
+                          <tr>
+                            <td colSpan={9} className="empty-cell">
+                              No other income receipts for this society yet.
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+            </section>
           ) : workspace === "chargeTypes" ? (
             <section className={`workspace ${isChargeTypeFormOpen ? "" : "registry-only"}`}>
               {isChargeTypeFormOpen ? (
@@ -12133,7 +12678,8 @@ function App() {
                               ...current,
                               month,
                               invoice_date_from: range.from,
-                              invoice_date_to: range.to
+                              invoice_date_to: range.to,
+                              page: 1
                             }));
                           }}
                         />
@@ -12147,7 +12693,8 @@ function App() {
                             setInvoiceFilters((current) => ({
                               ...current,
                               month: "",
-                              invoice_date_from: event.target.value
+                              invoice_date_from: event.target.value,
+                              page: 1
                             }))
                           }
                         />
@@ -12161,7 +12708,8 @@ function App() {
                             setInvoiceFilters((current) => ({
                               ...current,
                               month: "",
-                              invoice_date_to: event.target.value
+                              invoice_date_to: event.target.value,
+                              page: 1
                             }))
                           }
                         />
@@ -12171,7 +12719,7 @@ function App() {
                         <select
                           value={invoiceFilters.flat_id}
                           onChange={(event) =>
-                            setInvoiceFilters((current) => ({ ...current, flat_id: event.target.value }))
+                            setInvoiceFilters((current) => ({ ...current, flat_id: event.target.value, page: 1 }))
                           }
                         >
                           <option value="">All flats</option>
@@ -12187,7 +12735,7 @@ function App() {
                         <select
                           value={invoiceFilters.status}
                           onChange={(event) =>
-                            setInvoiceFilters((current) => ({ ...current, status: event.target.value }))
+                            setInvoiceFilters((current) => ({ ...current, status: event.target.value, page: 1 }))
                           }
                         >
                           <option value="">All statuses</option>
@@ -12203,7 +12751,11 @@ function App() {
                       <button
                         type="button"
                         disabled={!selectedTenantId || !selectedSocietyId || isLoadingInvoices}
-                        onClick={() => void refreshInvoices(selectedTenantId, selectedSocietyId)}
+                        onClick={() => {
+                          const nextFilters = { ...invoiceFilters, page: 1 };
+                          setInvoiceFilters(nextFilters);
+                          void refreshInvoices(selectedTenantId, selectedSocietyId, token, nextFilters);
+                        }}
                       >
                         Apply Filters
                       </button>
@@ -12229,6 +12781,60 @@ function App() {
                     <div className="section-heading">
                       <h2>Invoice Registry</h2>
                       <div className="row-actions">
+                        <label className="compact-field">
+                          Rows
+                          <select
+                            value={invoiceFilters.page_size}
+                            onChange={(event) => {
+                              const nextFilters = {
+                                ...invoiceFilters,
+                                page: 1,
+                                page_size: Number(event.target.value)
+                              };
+                              setInvoiceFilters(nextFilters);
+                              void refreshInvoices(selectedTenantId, selectedSocietyId, token, nextFilters);
+                            }}
+                          >
+                            {[25, 50, 100, 200].map((pageSize) => (
+                              <option key={pageSize} value={pageSize}>
+                                {pageSize}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary compact"
+                          disabled={isLoadingInvoices || invoiceFilters.page <= 1}
+                          onClick={() => {
+                            const nextFilters = {
+                              ...invoiceFilters,
+                              page: Math.max(invoiceFilters.page - 1, 1)
+                            };
+                            setInvoiceFilters(nextFilters);
+                            void refreshInvoices(selectedTenantId, selectedSocietyId, token, nextFilters);
+                          }}
+                        >
+                          Previous
+                        </button>
+                        <span className="record-count">
+                          Page {invoiceFilters.page} of {Math.max(invoiceTotalPages, 1)}
+                        </span>
+                        <button
+                          type="button"
+                          className="secondary compact"
+                          disabled={isLoadingInvoices || invoiceFilters.page >= Math.max(invoiceTotalPages, 1)}
+                          onClick={() => {
+                            const nextFilters = {
+                              ...invoiceFilters,
+                              page: invoiceFilters.page + 1
+                            };
+                            setInvoiceFilters(nextFilters);
+                            void refreshInvoices(selectedTenantId, selectedSocietyId, token, nextFilters);
+                          }}
+                        >
+                          Next
+                        </button>
                         <button
                           type="button"
                           className="secondary compact"
@@ -12238,7 +12844,7 @@ function App() {
                           Cancel Selected
                         </button>
                         <span className="record-count">
-                          {isLoadingInvoices ? "Loading" : `${invoices.length} records`}
+                          {isLoadingInvoices ? "Loading" : `${invoiceTotalItems} records`}
                         </span>
                       </div>
                     </div>
@@ -12571,10 +13177,325 @@ function App() {
                   </table>
                 </div>
                 <div className="section-heading">
-                  <h2>Payment Registry</h2>
+                  <h2>Payment Result</h2>
+                  <span className="record-count">Latest saved payment</span>
+                </div>
+                {lastPaymentResult ? (
+                  <div className="payment-result">
+                    <div className="metrics-grid compact-metrics">
+                      <div className="metric-card">
+                        <span>Payment Date</span>
+                        <strong>{lastPaymentResult.payment.payment_date}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>Amount</span>
+                        <strong>{lastPaymentResult.payment.amount}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>Unapplied Advance</span>
+                        <strong>{lastPaymentResult.payment.unapplied_amount}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>Status</span>
+                        <strong>{lastPaymentResult.payment.status}</strong>
+                      </div>
+                    </div>
+
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Allocated To</th>
+                            <th>Type</th>
+                            <th>Due</th>
+                            <th>Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lastPaymentResult.payment.allocations.map((allocation) => {
+                            const invoice = lastPaymentResult.invoices.find(
+                              (item) => item.id === allocation.invoice_id
+                            );
+                            return (
+                              <tr key={allocation.id}>
+                                <td>{invoice?.invoice_number ?? allocation.invoice_id}</td>
+                                <td>{paymentInvoiceLabel(invoice)}</td>
+                                <td>{invoice?.due_date ?? ""}</td>
+                                <td>{allocation.allocated_amount}</td>
+                              </tr>
+                            );
+                          })}
+                          {!lastPaymentResult.payment.allocations.length ? (
+                            <tr>
+                              <td colSpan={4} className="empty-cell">
+                                No invoice allocation. Full amount was recorded as advance.
+                              </td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Auto-cancelled Penalty</th>
+                            <th>Date</th>
+                            <th>Due</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lastPaymentResult.payment.auto_cancelled_penalty_invoices.map((invoice) => (
+                            <tr key={invoice.id}>
+                              <td>{invoice.invoice_number}</td>
+                              <td>{invoice.invoice_date}</td>
+                              <td>{invoice.due_date}</td>
+                              <td>{invoice.total_amount}</td>
+                              <td><StatusPill status={invoice.status} /></td>
+                            </tr>
+                          ))}
+                          {!lastPaymentResult.payment.auto_cancelled_penalty_invoices.length ? (
+                            <tr>
+                              <td colSpan={5} className="empty-cell">
+                                No penalties were auto-cancelled for this payment.
+                              </td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-state-panel">
+                    <h3>No payment result yet</h3>
+                    <p>Record a payment to see allocations, advance, and cancelled penalties here.</p>
+                  </div>
+                )}
+              </section>
+            </section>
+          ) : workspace === "paymentRegister" ? (
+            <section className="workspace registry-only">
+              <section className="data-panel full-width-panel">
+                <div className="section-heading">
+                  <h2>Payment Register Filters</h2>
+                  <span className="record-count">Blank filters show all payments</span>
+                </div>
+                <div className="form-grid">
+                  <label>
+                    Month
+                    <input
+                      type="month"
+                      value={paymentRegisterFilters.month}
+                      onChange={(event) => {
+                        const month = event.target.value;
+                        const range = monthDateRange(month);
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          month,
+                          payment_date_from: range.from,
+                          payment_date_to: range.to,
+                          page: 1
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Date From
+                    <input
+                      type="date"
+                      value={paymentRegisterFilters.payment_date_from}
+                      onChange={(event) =>
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          month: "",
+                          payment_date_from: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Date To
+                    <input
+                      type="date"
+                      value={paymentRegisterFilters.payment_date_to}
+                      onChange={(event) =>
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          month: "",
+                          payment_date_to: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Flat Number
+                    <input
+                      value={paymentRegisterFilters.flat_number}
+                      onChange={(event) =>
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          flat_number: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Mode
+                    <select
+                      value={paymentRegisterFilters.payment_mode}
+                      onChange={(event) =>
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          payment_mode: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="">All modes</option>
+                      {paymentModes.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {mode}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Status
+                    <select
+                      value={paymentRegisterFilters.status}
+                      onChange={(event) =>
+                        setPaymentRegisterFilters((current) => ({
+                          ...current,
+                          status: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="">All statuses</option>
+                      {paymentStatuses.map((statusValue) => (
+                        <option key={statusValue} value={statusValue}>
+                          {statusValue}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextFilters = { ...paymentRegisterFilters, page: 1 };
+                      setPaymentRegisterFilters(nextFilters);
+                      void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, nextFilters);
+                    }}
+                  >
+                    Apply Filters
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setPaymentRegisterFilters(paymentRegisterFilterDefaults);
+                      void refreshPaymentRegister(
+                        selectedTenantId,
+                        selectedSocietyId,
+                        token,
+                        paymentRegisterFilterDefaults
+                      );
+                    }}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={isSaving || !paymentRegisterRows.length}
+                    onClick={() => void handlePaymentRegisterExport("xlsx")}
+                  >
+                    Excel
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={isSaving || !paymentRegisterRows.length}
+                    onClick={() => void handlePaymentRegisterExport("pdf")}
+                  >
+                    PDF
+                  </button>
+                </div>
+              </section>
+
+              <section className="data-panel full-width-panel">
+                <div className="section-heading">
+                  <h2>Payment Register</h2>
                   <span className="record-count">
-                    {isLoadingPayments ? "Loading" : `${payments.length} records`}
+                    {isLoadingPaymentRegister ? "Loading" : `${paymentRegisterTotalItems} records`}
                   </span>
+                </div>
+                <div className="pagination-bar">
+                  <label>
+                    Rows
+                    <select
+                      value={paymentRegisterFilters.page_size}
+                      onChange={(event) => {
+                        const nextFilters = {
+                          ...paymentRegisterFilters,
+                          page: 1,
+                          page_size: Number(event.target.value)
+                        };
+                        setPaymentRegisterFilters(nextFilters);
+                        void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, nextFilters);
+                      }}
+                    >
+                      {[25, 50, 100, 200].map((size) => (
+                        <option key={size} value={size}>
+                          {size}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary compact"
+                    disabled={isLoadingPaymentRegister || paymentRegisterFilters.page <= 1}
+                    onClick={() => {
+                      const nextFilters = {
+                        ...paymentRegisterFilters,
+                        page: Math.max(paymentRegisterFilters.page - 1, 1)
+                      };
+                      setPaymentRegisterFilters(nextFilters);
+                      void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, nextFilters);
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <span className="record-count">
+                    Page {paymentRegisterFilters.page} of {Math.max(paymentRegisterTotalPages, 1)}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary compact"
+                    disabled={
+                      isLoadingPaymentRegister ||
+                      paymentRegisterFilters.page >= Math.max(paymentRegisterTotalPages, 1)
+                    }
+                    onClick={() => {
+                      const nextFilters = {
+                        ...paymentRegisterFilters,
+                        page: paymentRegisterFilters.page + 1
+                      };
+                      setPaymentRegisterFilters(nextFilters);
+                      void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, nextFilters);
+                    }}
+                  >
+                    Next
+                  </button>
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -12582,45 +13503,45 @@ function App() {
                       <tr>
                         <th>Date</th>
                         <th>Flat</th>
+                        <th>Building</th>
+                        <th>Mode</th>
+                        <th>Reference</th>
                         <th>Amount</th>
                         <th>Unapplied</th>
-                        <th>Mode</th>
                         <th>Status</th>
                         <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {payments.map((payment) => {
-                        const flat = flats.find((item) => item.id === payment.flat_id);
-                        return (
-                          <tr key={payment.id}>
-                            <td>{payment.payment_date}</td>
-                            <td>{flat?.flat_number ?? ""}</td>
-                            <td>{payment.amount}</td>
-                            <td>{payment.unapplied_amount}</td>
-                            <td>{payment.payment_mode}</td>
-                            <td><StatusPill status={payment.status} /></td>
-                            <td>
-                              {payment.status === "received" ? (
-                                <button
-                                  type="button"
-                                  className="secondary-button"
-                                  disabled={isSaving}
-                                  onClick={() => void handleReversePayment(payment)}
-                                >
-                                  Reverse
-                                </button>
-                              ) : (
-                                "-"
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {!payments.length && !isLoadingPayments ? (
+                      {paymentRegisterRows.map((payment) => (
+                        <tr key={payment.id}>
+                          <td>{payment.payment_date}</td>
+                          <td>
+                            <strong>{payment.flat_number}</strong>
+                            {payment.wing_name ? <span className="table-subtext">{payment.wing_name}</span> : null}
+                          </td>
+                          <td>{payment.building_name}</td>
+                          <td>{payment.payment_mode}</td>
+                          <td>{payment.reference_number ?? ""}</td>
+                          <td>{payment.amount}</td>
+                          <td>{payment.unapplied_amount}</td>
+                          <td><StatusPill status={payment.status} /></td>
+                          <td>
+                            <button
+                              type="button"
+                              className="secondary compact"
+                              disabled={isSaving || payment.status !== "received"}
+                              onClick={() => handlePaymentRegisterReverse(payment)}
+                            >
+                              Reverse
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {!paymentRegisterRows.length && !isLoadingPaymentRegister ? (
                         <tr>
-                          <td colSpan={7} className="empty-cell">
-                            No payments recorded yet.
+                          <td colSpan={9} className="empty-cell">
+                            No payments match the selected filters.
                           </td>
                         </tr>
                       ) : null}

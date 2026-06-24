@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -214,6 +214,30 @@ def list_invoices(
     invoice_date_to: date | None = None,
 ) -> list[Invoice]:
     ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    statement = build_invoice_list_statement(
+        tenant_context=tenant_context,
+        society_id=society_id,
+        flat_id=flat_id,
+        status=status,
+        invoice_date_from=invoice_date_from,
+        invoice_date_to=invoice_date_to,
+    )
+    return list(
+        session.scalars(
+            statement.order_by(Invoice.invoice_date.desc(), Invoice.invoice_number.desc())
+        )
+    )
+
+
+def build_invoice_list_statement(
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    status: str | None = None,
+    invoice_date_from: date | None = None,
+    invoice_date_to: date | None = None,
+):
     statement = select(Invoice).where(
         Invoice.tenant_id == tenant_context.tenant_id,
         Invoice.society_id == society_id,
@@ -226,11 +250,39 @@ def list_invoices(
         statement = statement.where(Invoice.invoice_date >= invoice_date_from)
     if invoice_date_to is not None:
         statement = statement.where(Invoice.invoice_date <= invoice_date_to)
-    return list(
+    return statement
+
+
+def list_invoices_paginated(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    flat_id: uuid.UUID | None = None,
+    status: str | None = None,
+    invoice_date_from: date | None = None,
+    invoice_date_to: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[Invoice], int]:
+    ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    statement = build_invoice_list_statement(
+        tenant_context=tenant_context,
+        society_id=society_id,
+        flat_id=flat_id,
+        status=status,
+        invoice_date_from=invoice_date_from,
+        invoice_date_to=invoice_date_to,
+    )
+    total_items = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    rows = list(
         session.scalars(
             statement.order_by(Invoice.invoice_date.desc(), Invoice.invoice_number.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
     )
+    return rows, int(total_items)
 
 
 def rule_applies_to_flat(rule: BillingRule, flat: Flat) -> bool:
