@@ -1943,7 +1943,7 @@ function App() {
   const refreshScheduledJobs = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
-    authToken = token
+    authToken?: string
   ) => {
     if (!tenantId || !societyId) {
       setScheduledDueWork(null);
@@ -1954,9 +1954,10 @@ function App() {
     setIsLoadingScheduledJobs(true);
     setError("");
     try {
+      const requestToken = authToken ?? await refreshToken();
       const [dueWork, runs] = await Promise.all([
-        getScheduledDueWork(authToken, tenantId, societyId, scheduledJobFilters.as_of_date),
-        listScheduledJobRuns(authToken, tenantId, societyId)
+        getScheduledDueWork(requestToken, tenantId, societyId, scheduledJobFilters.as_of_date),
+        listScheduledJobRuns(requestToken, tenantId, societyId)
       ]);
       setScheduledDueWork(dueWork);
       setScheduledJobRuns(runs);
@@ -1965,7 +1966,7 @@ function App() {
     } finally {
       setIsLoadingScheduledJobs(false);
     }
-  }, [scheduledJobFilters.as_of_date, selectedSocietyId, selectedTenantId, token]);
+  }, [scheduledJobFilters.as_of_date, selectedSocietyId, selectedTenantId]);
 
   const refreshInvoiceSequence = useCallback(async (
     tenantId = selectedTenantId,
@@ -2703,7 +2704,7 @@ function App() {
     void refreshExpenseCategories(selectedTenantId, selectedSocietyId, token);
     void refreshBillingRules(selectedTenantId, selectedSocietyId, token);
     void refreshLateFeeRules(selectedTenantId, selectedSocietyId, token);
-    void refreshScheduledJobs(selectedTenantId, selectedSocietyId, token);
+    void refreshScheduledJobs(selectedTenantId, selectedSocietyId);
     void refreshInvoiceSequence(selectedTenantId, selectedSocietyId, token);
     void refreshInvoices(selectedTenantId, selectedSocietyId, token);
     void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token);
