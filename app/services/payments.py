@@ -493,6 +493,7 @@ def create_payment(
             )
         )
 
+    session.flush()
     auto_cancelled_penalty_invoice_ids = auto_cancel_invalid_unpaid_penalties(
         session,
         tenant_context=tenant_context,

@@ -469,3 +469,79 @@ def test_auto_cancel_invalid_penalty_after_backdated_full_payment_date() -> None
     assert penalty_25.status == "cancelled"
     assert penalty_25.amount_due == Decimal("0.00")
     assert application_25.status == "cancelled"
+
+
+def test_auto_cancel_invalid_penalty_after_advance_payment_before_due_date() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    rule = build_rule(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        grace_days=0,
+        repeat_interval_days=1,
+        max_applications_per_invoice=12,
+    )
+    original_invoice = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 15))
+    original_invoice.total_amount = Decimal("3000.00")
+    original_invoice.amount_due = Decimal("0.00")
+    original_invoice.status = "paid"
+    penalty_16 = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 16))
+    penalty_16.id = uuid.uuid4()
+    penalty_16.invoice_number = "INV-PEN-016"
+    penalty_16.total_amount = Decimal("100.00")
+    penalty_16.amount_paid = Decimal("0.00")
+    penalty_16.amount_due = Decimal("100.00")
+    penalty_24 = build_invoice(tenant_id=tenant_id, society_id=society_id, due_date=date(2026, 4, 24))
+    penalty_24.id = uuid.uuid4()
+    penalty_24.invoice_number = "INV-PEN-024"
+    penalty_24.total_amount = Decimal("50.00")
+    penalty_24.amount_paid = Decimal("0.00")
+    penalty_24.amount_due = Decimal("50.00")
+    application_16 = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=original_invoice.id,
+        penalty_invoice_id=penalty_16.id,
+        applied_as_of_date=date(2026, 4, 16),
+        penalty_amount=Decimal("100.00"),
+        status="active",
+    )
+    application_24 = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=rule.id,
+        original_invoice_id=original_invoice.id,
+        penalty_invoice_id=penalty_24.id,
+        applied_as_of_date=date(2026, 4, 24),
+        penalty_amount=Decimal("50.00"),
+        status="active",
+    )
+    session = FakeSession(
+        scalar_results=[
+            Decimal("3000.00"),
+            Decimal("3000.00"),
+        ],
+        scalars_results=[
+            [application_16, application_24],
+            [original_invoice],
+            [rule],
+            [penalty_16, penalty_24],
+        ],
+    )
+
+    cancelled_ids = auto_cancel_invalid_unpaid_penalties(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        original_invoice_ids=[original_invoice.id],
+        actor=FakeActor(),  # type: ignore[arg-type]
+    )
+
+    assert cancelled_ids == [penalty_16.id, penalty_24.id]
+    assert penalty_16.status == "cancelled"
+    assert penalty_16.amount_due == Decimal("0.00")
+    assert application_16.status == "cancelled"
+    assert penalty_24.status == "cancelled"
+    assert penalty_24.amount_due == Decimal("0.00")
+    assert application_24.status == "cancelled"
