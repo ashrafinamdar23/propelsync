@@ -1027,6 +1027,8 @@ function App() {
     ...paymentFormDefaults,
     payment_date: todayIsoDate()
   });
+  const [paymentOpenInvoiceRows, setPaymentOpenInvoiceRows] = useState<Invoice[]>([]);
+  const [isLoadingPaymentOpenInvoices, setIsLoadingPaymentOpenInvoices] = useState(false);
   const [paymentAllocations, setPaymentAllocations] = useState<Record<string, string>>({});
   const [lastPaymentResult, setLastPaymentResult] = useState<{
     payment: PaymentDetail;
@@ -1445,7 +1447,7 @@ function App() {
 
   const paymentOpenInvoices = useMemo(
     () =>
-      invoices
+      paymentOpenInvoiceRows
         .filter(
           (invoice) =>
             invoice.flat_id === paymentForm.flat_id &&
@@ -1463,7 +1465,7 @@ function App() {
           }
           return left.invoice_number.localeCompare(right.invoice_number);
         }),
-    [invoices, paymentForm.flat_id]
+    [paymentOpenInvoiceRows, paymentForm.flat_id]
   );
 
   const paymentAllocatedTotal = useMemo(
@@ -2091,6 +2093,43 @@ function App() {
       setIsLoadingPaymentRegister(false);
     }
   }, [selectedSocietyId, selectedTenantId, token]);
+
+  const refreshPaymentOpenInvoices = useCallback(async (
+    tenantId = selectedTenantId,
+    societyId = selectedSocietyId,
+    flatId = paymentForm.flat_id,
+    authToken = token
+  ) => {
+    if (!tenantId || !societyId || !flatId) {
+      setPaymentOpenInvoiceRows([]);
+      return;
+    }
+
+    setIsLoadingPaymentOpenInvoices(true);
+    setError("");
+    try {
+      const firstPage = await listInvoices(authToken, tenantId, societyId, {
+        flat_id: flatId,
+        page: 1,
+        page_size: 200
+      });
+      let rows = firstPage.items;
+      for (let page = 2; page <= firstPage.total_pages; page += 1) {
+        const response = await listInvoices(authToken, tenantId, societyId, {
+          flat_id: flatId,
+          page,
+          page_size: 200
+        });
+        rows = [...rows, ...response.items];
+      }
+      setPaymentOpenInvoiceRows(rows);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load open invoices for payment.");
+      setPaymentOpenInvoiceRows([]);
+    } finally {
+      setIsLoadingPaymentOpenInvoices(false);
+    }
+  }, [paymentForm.flat_id, selectedSocietyId, selectedTenantId, token]);
 
   const refreshVendors = useCallback(async (
     tenantId = selectedTenantId,
@@ -3591,6 +3630,7 @@ function App() {
   async function handlePaymentBuildingChange(buildingId: string) {
     setPaymentForm((current) => ({ ...current, building_id: buildingId, flat_id: "" }));
     setPaymentAllocations({});
+    setPaymentOpenInvoiceRows([]);
     setLastPaymentResult(null);
     if (!selectedTenantId || !selectedSocietyId || !buildingId) {
       setFlats([]);
@@ -3600,28 +3640,58 @@ function App() {
     await refreshFlats(selectedTenantId, selectedSocietyId, buildingId, authToken);
   }
 
-  function handlePaymentFlatChange(flatId: string) {
+  async function handlePaymentFlatChange(flatId: string) {
     setPaymentForm((current) => ({ ...current, flat_id: flatId }));
+    setPaymentAllocations({});
+    setPaymentOpenInvoiceRows([]);
     setLastPaymentResult(null);
-    const openInvoicesForFlat = invoices
-      .filter(
-        (invoice) =>
-          invoice.flat_id === flatId &&
-          !["paid", "cancelled"].includes(invoice.status) &&
-          Number(invoice.amount_due) > 0
-      )
-      .sort((left, right) => {
-        const dueDateComparison = left.due_date.localeCompare(right.due_date);
-        if (dueDateComparison !== 0) {
-          return dueDateComparison;
-        }
-        const invoiceDateComparison = left.invoice_date.localeCompare(right.invoice_date);
-        if (invoiceDateComparison !== 0) {
-          return invoiceDateComparison;
-        }
-        return left.invoice_number.localeCompare(right.invoice_number);
+    if (!selectedTenantId || !selectedSocietyId || !flatId) {
+      return;
+    }
+
+    setIsLoadingPaymentOpenInvoices(true);
+    setError("");
+    try {
+      const authToken = await refreshToken();
+      const firstPage = await listInvoices(authToken, selectedTenantId, selectedSocietyId, {
+        flat_id: flatId,
+        page: 1,
+        page_size: 200
       });
-    setPaymentAllocations(buildOldestFirstPaymentAllocations(openInvoicesForFlat, paymentForm.amount));
+      let rows = firstPage.items;
+      for (let page = 2; page <= firstPage.total_pages; page += 1) {
+        const response = await listInvoices(authToken, selectedTenantId, selectedSocietyId, {
+          flat_id: flatId,
+          page,
+          page_size: 200
+        });
+        rows = [...rows, ...response.items];
+      }
+      setPaymentOpenInvoiceRows(rows);
+      const openInvoicesForFlat = rows
+        .filter(
+          (invoice) =>
+            invoice.flat_id === flatId &&
+            !["paid", "cancelled"].includes(invoice.status) &&
+            Number(invoice.amount_due) > 0
+        )
+        .sort((left, right) => {
+          const dueDateComparison = left.due_date.localeCompare(right.due_date);
+          if (dueDateComparison !== 0) {
+            return dueDateComparison;
+          }
+          const invoiceDateComparison = left.invoice_date.localeCompare(right.invoice_date);
+          if (invoiceDateComparison !== 0) {
+            return invoiceDateComparison;
+          }
+          return left.invoice_number.localeCompare(right.invoice_number);
+        });
+      setPaymentAllocations(buildOldestFirstPaymentAllocations(openInvoicesForFlat, paymentForm.amount));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load open invoices for payment.");
+    } finally {
+      setIsLoadingPaymentOpenInvoices(false);
+    }
   }
 
   function startInvoicePaymentCollection(invoice: Invoice) {
@@ -3646,6 +3716,7 @@ function App() {
       reference_number: "",
       notes: `Collection for ${invoice.invoice_number}`
     }));
+    setPaymentOpenInvoiceRows([invoice]);
     setPaymentAllocations({ [invoice.id]: invoice.amount_due });
     setSelectedInvoiceId("");
     setSelectedInvoiceDetail(null);
@@ -3695,7 +3766,8 @@ function App() {
       });
       setPaymentAllocations({});
       setNotice("Payment recorded.");
-      await refreshInvoices(selectedTenantId, selectedSocietyId, authToken);
+      await refreshPaymentOpenInvoices(selectedTenantId, selectedSocietyId, paymentForm.flat_id, authToken);
+      await refreshInvoices(selectedTenantId, selectedSocietyId, authToken, invoiceFilters);
       await refreshOutstanding(selectedTenantId, selectedSocietyId, authToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to record payment.");
@@ -5745,6 +5817,7 @@ function App() {
     setInvoiceSequence(null);
     setInvoiceSequenceForm(invoiceSequenceFormDefaults);
     setInvoices([]);
+    setPaymentOpenInvoiceRows([]);
     setLastPaymentResult(null);
     setOutstandingSummary(null);
     setSelectedInvoiceId("");
@@ -5816,6 +5889,7 @@ function App() {
     setInvoiceSequence(null);
     setInvoiceSequenceForm(invoiceSequenceFormDefaults);
     setInvoices([]);
+    setPaymentOpenInvoiceRows([]);
     setLastPaymentResult(null);
     setOutstandingSummary(null);
     setSelectedInvoiceId("");
@@ -6386,7 +6460,7 @@ function App() {
       return;
     }
     if (workspace === "payments") {
-      void refreshInvoices(selectedTenantId, selectedSocietyId, token, invoiceFilters);
+      void refreshPaymentOpenInvoices(selectedTenantId, selectedSocietyId, paymentForm.flat_id, token);
       void refreshOutstanding(selectedTenantId, selectedSocietyId);
       return;
     }
@@ -13003,7 +13077,7 @@ function App() {
                   <select
                     value={paymentForm.flat_id}
                     disabled={!paymentForm.building_id}
-                    onChange={(event) => handlePaymentFlatChange(event.target.value)}
+                    onChange={(event) => void handlePaymentFlatChange(event.target.value)}
                     required
                   >
                     <option value="">Select flat</option>
@@ -13118,7 +13192,9 @@ function App() {
               <section className="data-panel">
                 <div className="section-heading">
                   <h2>Open Invoices</h2>
-                  <span className="record-count">{paymentOpenInvoices.length} open</span>
+                  <span className="record-count">
+                    {isLoadingPaymentOpenInvoices ? "Loading" : `${paymentOpenInvoices.length} open`}
+                  </span>
                 </div>
                 <div className="form-actions">
                   <button
@@ -13178,7 +13254,11 @@ function App() {
                       {!paymentOpenInvoices.length ? (
                         <tr>
                           <td colSpan={4} className="empty-cell">
-                            Select a flat with open invoices.
+                            {isLoadingPaymentOpenInvoices
+                              ? "Loading open invoices for this flat."
+                              : paymentForm.flat_id
+                                ? "No open invoices for this flat."
+                                : "Select a flat with open invoices."}
                           </td>
                         </tr>
                       ) : null}
