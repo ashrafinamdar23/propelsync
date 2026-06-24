@@ -1998,7 +1998,7 @@ function App() {
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
     authToken = token,
-    filters = invoiceFilters
+    filters = invoiceFilterDefaults
   ) => {
     if (!tenantId || !societyId) {
       setInvoices([]);
@@ -2026,11 +2026,15 @@ function App() {
       setSelectedInvoiceIds((current) => current.filter((invoiceId) => rows.some((invoice) => invoice.id === invoiceId)));
       setInvoiceTotalItems(response.total_items);
       setInvoiceTotalPages(response.total_pages);
-      setInvoiceFilters((current) => ({
-        ...current,
-        page: response.page,
-        page_size: response.page_size
-      }));
+      setInvoiceFilters((current) =>
+        current.page === response.page && current.page_size === response.page_size
+          ? current
+          : {
+              ...current,
+              page: response.page,
+              page_size: response.page_size
+            }
+      );
       setSelectedInvoiceId((current) => {
         if (current && rows.some((invoice) => invoice.id === current)) {
           return current;
@@ -2042,13 +2046,13 @@ function App() {
     } finally {
       setIsLoadingInvoices(false);
     }
-  }, [invoiceFilters, selectedSocietyId, selectedTenantId, token]);
+  }, [selectedSocietyId, selectedTenantId, token]);
 
   const refreshPaymentRegister = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
     authToken = token,
-    filters = paymentRegisterFilters
+    filters = paymentRegisterFilterDefaults
   ) => {
     if (!tenantId || !societyId) {
       setPaymentRegisterRows([]);
@@ -2072,17 +2076,21 @@ function App() {
       setPaymentRegisterRows(response.items);
       setPaymentRegisterTotalItems(response.total_items);
       setPaymentRegisterTotalPages(response.total_pages);
-      setPaymentRegisterFilters((current) => ({
-        ...current,
-        page: response.page,
-        page_size: response.page_size
-      }));
+      setPaymentRegisterFilters((current) =>
+        current.page === response.page && current.page_size === response.page_size
+          ? current
+          : {
+              ...current,
+              page: response.page,
+              page_size: response.page_size
+            }
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load payment register.");
     } finally {
       setIsLoadingPaymentRegister(false);
     }
-  }, [paymentRegisterFilters, selectedSocietyId, selectedTenantId, token]);
+  }, [selectedSocietyId, selectedTenantId, token]);
 
   const refreshVendors = useCallback(async (
     tenantId = selectedTenantId,
@@ -6370,20 +6378,20 @@ function App() {
       return;
     }
     if (workspace === "manualInvoices") {
-      void refreshInvoices(selectedTenantId, selectedSocietyId);
+      void refreshInvoices(selectedTenantId, selectedSocietyId, token, invoiceFilters);
       return;
     }
     if (workspace === "invoices") {
-      void refreshInvoices(selectedTenantId, selectedSocietyId);
+      void refreshInvoices(selectedTenantId, selectedSocietyId, token, invoiceFilters);
       return;
     }
     if (workspace === "payments") {
-      void refreshInvoices(selectedTenantId, selectedSocietyId);
+      void refreshInvoices(selectedTenantId, selectedSocietyId, token, invoiceFilters);
       void refreshOutstanding(selectedTenantId, selectedSocietyId);
       return;
     }
     if (workspace === "paymentRegister") {
-      void refreshPaymentRegister(selectedTenantId, selectedSocietyId);
+      void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, paymentRegisterFilters);
       return;
     }
     if (workspace === "outstanding") {
@@ -6476,7 +6484,8 @@ function App() {
     void refreshBillingRules(selectedTenantId, selectedSocietyId);
     void refreshLateFeeRules(selectedTenantId, selectedSocietyId);
     void refreshScheduledJobs(selectedTenantId, selectedSocietyId);
-    void refreshInvoices(selectedTenantId, selectedSocietyId);
+    void refreshInvoices(selectedTenantId, selectedSocietyId, token, invoiceFilters);
+    void refreshPaymentRegister(selectedTenantId, selectedSocietyId, token, paymentRegisterFilters);
     void refreshOutstanding(selectedTenantId, selectedSocietyId);
     void refreshOwners(selectedTenantId, selectedSocietyId);
     void refreshVendors(selectedTenantId, selectedSocietyId);
