@@ -488,6 +488,34 @@ def load_allocated_invoices(
     return invoices
 
 
+def validate_penalty_allocations(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    payment_date: date,
+    invoices: dict[uuid.UUID, Invoice],
+) -> None:
+    if not invoices:
+        return
+
+    penalty_applications = list(
+        session.scalars(
+            select(LateFeeApplication).where(
+                LateFeeApplication.tenant_id == tenant_context.tenant_id,
+                LateFeeApplication.society_id == society_id,
+                LateFeeApplication.penalty_invoice_id.in_(set(invoices)),
+                LateFeeApplication.status == "active",
+            )
+        )
+    )
+    for application in penalty_applications:
+        if application.applied_as_of_date > payment_date:
+            raise PaymentAllocationInvalidError(
+                "Payment cannot be allocated to a penalty before the penalty application date."
+            )
+
+
 def build_oldest_first_allocations(
     session: Session,
     *,
@@ -643,6 +671,13 @@ def create_payment(
         society_id=society_id,
         flat_id=payload.flat_id,
         allocations=allocations,
+    )
+    validate_penalty_allocations(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        payment_date=payload.payment_date,
+        invoices=invoices,
     )
     total_allocated = money(sum((allocation.allocated_amount for allocation in allocations), Decimal("0.00")))
 

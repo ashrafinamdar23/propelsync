@@ -12,6 +12,7 @@ from app.services.payments import (
     post_payment_journal,
     update_invoice_after_allocation,
     update_invoice_after_payment_reversal,
+    validate_penalty_allocations,
 )
 from app.tenants.context import TenantContext
 from app.schemas.payment import PaymentCreate
@@ -331,6 +332,38 @@ def test_build_oldest_first_allocations_skips_future_penalty_when_original_paid(
     assert [allocation.allocated_amount for allocation in allocations] == [Decimal("3000.00")]
 
 
+def test_validate_penalty_allocations_rejects_future_penalty_for_payment_date() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    penalty_invoice = build_invoice(amount_due=Decimal("100.00"))
+    penalty_invoice.tenant_id = tenant_id
+    penalty_invoice.society_id = society_id
+    application = LateFeeApplication(
+        tenant_id=tenant_id,
+        society_id=society_id,
+        late_fee_rule_id=uuid.uuid4(),
+        original_invoice_id=uuid.uuid4(),
+        penalty_invoice_id=penalty_invoice.id,
+        applied_as_of_date=date(2026, 6, 21),
+        penalty_amount=Decimal("100.00"),
+        status="active",
+    )
+    session = FakeSession(scalars_results=[[application]])
+
+    try:
+        validate_penalty_allocations(
+            session,  # type: ignore[arg-type]
+            tenant_context=build_context(tenant_id),
+            society_id=society_id,
+            payment_date=date(2026, 6, 20),
+            invoices={penalty_invoice.id: penalty_invoice},
+        )
+    except PaymentAllocationInvalidError as exc:
+        assert "before the penalty application date" in str(exc)
+    else:
+        raise AssertionError("Expected future penalty allocation to be rejected.")
+
+
 def test_create_payment_auto_allocates_oldest_invoices_when_none_supplied() -> None:
     tenant_id = uuid.uuid4()
     society_id = uuid.uuid4()
@@ -379,6 +412,7 @@ def test_create_payment_auto_allocates_oldest_invoices_when_none_supplied() -> N
             [first_invoice, second_invoice],
             [],
             [first_invoice, second_invoice],
+            [],
             [],
             [deposit_account, receivable_account],
         ],

@@ -693,6 +693,47 @@ def amount_paid_by_cutoff(
     return money(Decimal(amount or 0))
 
 
+def original_invoice_full_payment_dates(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    original_invoices: dict[uuid.UUID, Invoice],
+) -> dict[uuid.UUID, date]:
+    if not original_invoices:
+        return {}
+
+    rows = session.execute(
+        select(
+            PaymentAllocation.invoice_id,
+            Payment.payment_date,
+            PaymentAllocation.allocated_amount,
+        )
+        .join(Payment, Payment.id == PaymentAllocation.payment_id)
+        .where(
+            PaymentAllocation.tenant_id == tenant_context.tenant_id,
+            PaymentAllocation.society_id == society_id,
+            PaymentAllocation.invoice_id.in_(set(original_invoices)),
+            PaymentAllocation.status == "active",
+            Payment.tenant_id == tenant_context.tenant_id,
+            Payment.society_id == society_id,
+            Payment.status == "received",
+        )
+        .order_by(PaymentAllocation.invoice_id, Payment.payment_date, PaymentAllocation.created_at)
+    )
+
+    cumulative_paid: dict[uuid.UUID, Decimal] = {invoice_id: Decimal("0.00") for invoice_id in original_invoices}
+    full_payment_dates: dict[uuid.UUID, date] = {}
+    for invoice_id, payment_date, allocated_amount in rows:
+        if invoice_id in full_payment_dates:
+            continue
+        cumulative_paid[invoice_id] = money(cumulative_paid[invoice_id] + Decimal(allocated_amount or 0))
+        if cumulative_paid[invoice_id] >= original_invoices[invoice_id].total_amount:
+            full_payment_dates[invoice_id] = payment_date
+
+    return full_payment_dates
+
+
 def auto_cancel_invalid_unpaid_penalties(
     session: Session,
     *,
@@ -752,6 +793,13 @@ def auto_cancel_invalid_unpaid_penalties(
         )
     }
 
+    full_payment_dates = original_invoice_full_payment_dates(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        original_invoices=original_invoices,
+    )
+
     cancelled_invoice_ids: list[uuid.UUID] = []
     for application in applications:
         original_invoice = original_invoices.get(application.original_invoice_id)
@@ -762,15 +810,8 @@ def auto_cancel_invalid_unpaid_penalties(
         if penalty_invoice.status == "cancelled" or penalty_invoice.amount_paid > 0:
             continue
 
-        cutoff_date = application.applied_as_of_date - timedelta(days=1)
-        paid_by_cutoff = amount_paid_by_cutoff(
-            session,
-            tenant_context=tenant_context,
-            society_id=society_id,
-            invoice_id=original_invoice.id,
-            cutoff_date=cutoff_date,
-        )
-        if paid_by_cutoff < original_invoice.total_amount:
+        full_payment_date = full_payment_dates.get(original_invoice.id)
+        if full_payment_date is None or full_payment_date >= application.applied_as_of_date:
             continue
 
         penalty_invoice.status = "cancelled"
@@ -803,8 +844,7 @@ def auto_cancel_invalid_unpaid_penalties(
                 "society_id": str(society_id),
                 "original_invoice_id": str(original_invoice.id),
                 "late_fee_rule_id": str(rule.id),
-                "paid_by_cutoff": str(paid_by_cutoff),
-                "cutoff_date": cutoff_date.isoformat(),
+                "original_invoice_full_payment_date": full_payment_date.isoformat(),
                 "applied_as_of_date": application.applied_as_of_date.isoformat(),
             },
         )
