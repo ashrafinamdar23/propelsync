@@ -119,25 +119,69 @@ def safe_sheet_name(name: str, fallback: str) -> str:
     return (cleaned or fallback)[:31]
 
 
+def xlsx_styled_row(
+    row_index: int,
+    values: Iterable[str | Decimal],
+    *,
+    text_style: int | None = None,
+    decimal_style: int | None = None,
+    height: int | None = None,
+) -> str:
+    height_attr = f' ht="{height}" customHeight="1"' if height is not None else ""
+    cells = "".join(
+        xlsx_cell(
+            row_index,
+            index,
+            value,
+            decimal_style if isinstance(value, Decimal) else text_style,
+        )
+        for index, value in enumerate(values, start=1)
+    )
+    return f'<row r="{row_index}"{height_attr}>{cells}</row>'
+
+
+def xlsx_columns_xml(table: ExportTable) -> str:
+    column_count = max(
+        [len(table.headers), *(len(row) for row in table.rows), *(len(row) for row in table.footer_rows)],
+        default=1,
+    )
+    widths: list[str] = []
+    source_rows = [table.headers, *table.rows[:80], *table.footer_rows]
+    for column_index in range(column_count):
+        max_length = 8
+        for row in source_rows:
+            if column_index < len(row):
+                max_length = max(max_length, len(text_value(row[column_index])))
+        width = min(max(max_length + 2, 10), 34)
+        widths.append(
+            f'<col min="{column_index + 1}" max="{column_index + 1}" width="{width}" customWidth="1"/>'
+        )
+    return f"<cols>{''.join(widths)}</cols>"
+
+
 def xlsx_sheet_xml(table: ExportTable) -> str:
     rows: list[str] = [
-        xlsx_row(1, [table.title], 1),
-        xlsx_row(2, [table.subtitle]),
-        xlsx_row(4, table.headers, 1),
+        xlsx_styled_row(1, [table.title], text_style=2, height=18),
+        xlsx_styled_row(2, [table.subtitle], text_style=5),
+        xlsx_styled_row(4, table.headers, text_style=1, height=16),
     ]
     current_row = 5
     for row in table.rows:
-        rows.append(xlsx_row(current_row, row))
+        rows.append(xlsx_styled_row(current_row, row, decimal_style=3))
         current_row += 1
     current_row += 1
     for row in table.footer_rows:
-        rows.append(xlsx_row(current_row, row, 1))
+        rows.append(xlsx_styled_row(current_row, row, text_style=1, decimal_style=4, height=16))
         current_row += 1
 
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+  <sheetFormatPr defaultRowHeight="14"/>
+  {xlsx_columns_xml(table)}
   <sheetData>{''.join(rows)}</sheetData>
+  <autoFilter ref="A4:{column_letter(max(len(table.headers), 1))}4"/>
+  <pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
 </worksheet>"""
 
 
@@ -147,11 +191,11 @@ def build_multi_sheet_xlsx(tables: list[ExportTable]) -> bytes:
 
     styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
-  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
-  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <fonts count="3"><font><sz val="9"/><name val="Calibri"/></font><font><b/><sz val="9"/><name val="Calibri"/></font><font><b/><sz val="12"/><name val="Calibri"/></font></fonts>
+  <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEAF3EF"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9E2E8"/></left><right style="thin"><color rgb="FFD9E2E8"/></right><top style="thin"><color rgb="FFD9E2E8"/></top><bottom style="thin"><color rgb="FFD9E2E8"/></bottom><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="2"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="0" borderId="0" applyFont="1"/></cellXfs>
+  <cellXfs count="6"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/><xf fontId="2" fillId="0" borderId="0" applyFont="1"/><xf fontId="0" fillId="0" borderId="0" numFmtId="4" applyNumberFormat="1"/><xf fontId="1" fillId="2" borderId="1" numFmtId="4" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/><xf fontId="0" fillId="0" borderId="0" applyFont="1"><alignment wrapText="1"/></xf></cellXfs>
 </styleSheet>"""
 
     sheet_overrides = "\n".join(
