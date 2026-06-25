@@ -4,14 +4,16 @@ import uuid
 
 import pytest
 
-from app.models import ChartOfAccount, Expense, ExpensePayment, JournalEntry, JournalLine, Society
+from app.models import ChartOfAccount, Expense, ExpensePayment, ExpensePaymentAllocation, JournalEntry, JournalLine, Society, User
 from app.services.expense_payments import (
     ExpensePaymentAllocationInvalidError,
     ExpensePaymentJournalPostingError,
+    allocate_existing_expense_payment,
     money,
     post_expense_payment_journal,
     update_expense_after_payment,
 )
+from app.schemas.expense_payment import ExpensePaymentAllocateRequest, ExpensePaymentAllocationCreate
 from app.tenants.context import TenantContext
 
 
@@ -24,6 +26,7 @@ class FakeSession:
         self.scalar_results = scalar_results or []
         self.scalars_results = scalars_results or []
         self.added: list[object] = []
+        self.committed = False
 
     def scalar(self, *_: object) -> object | None:
         return self.scalar_results.pop(0) if self.scalar_results else None
@@ -39,9 +42,24 @@ class FakeSession:
             if getattr(instance, "id", None) is None:
                 instance.id = uuid.uuid4()
 
+    def commit(self) -> None:
+        self.committed = True
+
+    def refresh(self, _: object) -> None:
+        return None
+
 
 def build_context(tenant_id: uuid.UUID) -> TenantContext:
     return TenantContext(tenant_id=tenant_id, tenant=None, user=None)  # type: ignore[arg-type]
+
+
+def build_actor() -> User:
+    return User(
+        id=uuid.uuid4(),
+        keycloak_subject="subject-1",
+        email="admin@example.com",
+        full_name="Society Admin",
+    )
 
 
 def build_payable_account(tenant_id: uuid.UUID, society_id: uuid.UUID) -> ChartOfAccount:
@@ -190,3 +208,52 @@ def test_over_allocation_is_rejected() -> None:
 
     with pytest.raises(ExpensePaymentAllocationInvalidError):
         update_expense_after_payment(expense, Decimal("501.00"))
+
+
+def test_allocate_existing_expense_payment_consumes_unapplied_amount() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    vendor_id = uuid.uuid4()
+    payment = ExpensePayment(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        society_id=society_id,
+        vendor_id=vendor_id,
+        payment_account_id=uuid.uuid4(),
+        payment_date=date(2026, 3, 31),
+        amount=Decimal("14.16"),
+        unapplied_amount=Decimal("14.16"),
+        payment_mode="bank_transfer",
+        status="paid",
+    )
+    expense = build_expense(amount_due=Decimal("14.16"))
+    expense.tenant_id = tenant_id
+    expense.society_id = society_id
+    expense.vendor_id = vendor_id
+    expense.total_amount = Decimal("14.16")
+    expense.amount = Decimal("14.16")
+    payload = ExpensePaymentAllocateRequest(
+        allocations=[
+            ExpensePaymentAllocationCreate(expense_id=expense.id, allocated_amount=Decimal("14.16"))
+        ]
+    )
+    society = Society(id=society_id, tenant_id=tenant_id, name="Green Heights")
+    session = FakeSession(scalar_results=[society, payment], scalars_results=[[expense]])
+
+    updated = allocate_existing_expense_payment(
+        session,  # type: ignore[arg-type]
+        tenant_context=build_context(tenant_id),
+        society_id=society_id,
+        expense_payment_id=payment.id,
+        payload=payload,
+        actor=build_actor(),
+    )
+
+    allocations = [item for item in session.added if isinstance(item, ExpensePaymentAllocation)]
+    assert updated.unapplied_amount == Decimal("0.00")
+    assert expense.payment_status == "paid"
+    assert expense.amount_due == Decimal("0.00")
+    assert len(allocations) == 1
+    assert allocations[0].expense_id == expense.id
+    assert allocations[0].allocated_amount == Decimal("14.16")
+    assert session.committed is True

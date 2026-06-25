@@ -18,6 +18,7 @@ import {
   activateTenant,
   activateVendor,
   activateWing,
+  allocateExpensePayment,
   approveExpense,
   applyLateFees,
   bulkCancelInvoices,
@@ -1151,6 +1152,7 @@ function App() {
     payment_date: todayIsoDate()
   });
   const [expensePaymentAllocations, setExpensePaymentAllocations] = useState<Record<string, string>>({});
+  const [allocatingExpensePaymentId, setAllocatingExpensePaymentId] = useState<string | null>(null);
   const [isLoadingExpensePayments, setIsLoadingExpensePayments] = useState(false);
 
   const [error, setError] = useState("");
@@ -4799,6 +4801,10 @@ function App() {
     const allocations = Object.entries(expensePaymentAllocations)
       .filter(([, amount]) => Number(amount) > 0)
       .map(([expenseId, amount]) => ({ expense_id: expenseId, allocated_amount: amount }));
+    if (allocatingExpensePaymentId && !allocations.length) {
+      setError("Enter at least one allocation amount.");
+      return;
+    }
     const payload: ExpensePaymentPayload = {
       vendor_id: expensePaymentForm.vendor_id || null,
       payment_account_id: expensePaymentForm.payment_account_id,
@@ -4814,7 +4820,13 @@ function App() {
     setNotice("");
     try {
       const authToken = await refreshToken();
-      await createExpensePayment(authToken, selectedTenantId, selectedSocietyId, payload);
+      if (allocatingExpensePaymentId) {
+        await allocateExpensePayment(authToken, selectedTenantId, selectedSocietyId, allocatingExpensePaymentId, {
+          allocations
+        });
+      } else {
+        await createExpensePayment(authToken, selectedTenantId, selectedSocietyId, payload);
+      }
       setExpensePaymentForm({
         ...expensePaymentFormDefaults,
         vendor_id: expensePaymentForm.vendor_id,
@@ -4822,11 +4834,12 @@ function App() {
         payment_date: todayIsoDate()
       });
       setExpensePaymentAllocations({});
-      setNotice("Expense payment recorded.");
+      setAllocatingExpensePaymentId(null);
+      setNotice(allocatingExpensePaymentId ? "Expense payment allocated." : "Expense payment recorded.");
       await refreshExpenses(selectedTenantId, selectedSocietyId, authToken);
       await refreshExpensePayments(selectedTenantId, selectedSocietyId, authToken);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to record expense payment.");
+      setError(err instanceof Error ? err.message : "Unable to save expense payment.");
     } finally {
       setIsSaving(false);
     }
@@ -5287,6 +5300,24 @@ function App() {
       amount: expense.amount,
       tax_amount: expense.tax_amount,
       notes: expense.notes ?? ""
+    });
+  }
+
+  function startAllocateExpensePayment(payment: ExpensePayment) {
+    setWorkspace("expenses");
+    setFormWorkspace(null);
+    setAllocatingExpensePaymentId(payment.id);
+    setExpensePaymentAllocations({});
+    setNotice("");
+    setError("");
+    setExpensePaymentForm({
+      vendor_id: payment.vendor_id ?? "",
+      payment_account_id: payment.payment_account_id,
+      payment_date: payment.payment_date,
+      amount: payment.unapplied_amount,
+      payment_mode: payment.payment_mode,
+      reference_number: payment.reference_number ?? "",
+      notes: payment.notes ?? ""
     });
   }
 
@@ -5901,6 +5932,8 @@ function App() {
     setExpenseForm({ ...expenseFormDefaults, expense_date: todayIsoDate(), due_date: todayIsoDate() });
     setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
     setExpensePaymentAllocations({});
+    setAllocatingExpensePaymentId(null);
+    setAllocatingExpensePaymentId(null);
     setOwnershipForm(ownershipFormDefaults);
     setResidentForm(residentFormDefaults);
     setLeaseAgreementForm(leaseAgreementFormDefaults);
@@ -5969,6 +6002,8 @@ function App() {
     setExpenseForm({ ...expenseFormDefaults, expense_date: todayIsoDate(), due_date: todayIsoDate() });
     setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
     setExpensePaymentAllocations({});
+    setAllocatingExpensePaymentId(null);
+    setAllocatingExpensePaymentId(null);
     setOwnershipForm(ownershipFormDefaults);
     setResidentForm(residentFormDefaults);
     setLeaseAgreementForm(leaseAgreementFormDefaults);
@@ -15673,10 +15708,26 @@ function App() {
                 </div>
               </section>
               <form className="panel-form" onSubmit={handleExpensePaymentSubmit}>
-                <h2>Record Expense Payment</h2>
+                <div className="form-title-row">
+                  <h2>{allocatingExpensePaymentId ? "Allocate Expense Payment" : "Record Expense Payment"}</h2>
+                  {allocatingExpensePaymentId ? (
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      onClick={() => {
+                        setAllocatingExpensePaymentId(null);
+                        setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
+                        setExpensePaymentAllocations({});
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </div>
                 <label>
                   Vendor
                   <select
+                    disabled={Boolean(allocatingExpensePaymentId)}
                     value={expensePaymentForm.vendor_id}
                     onChange={(event) => {
                       setExpensePaymentForm({ ...expensePaymentForm, vendor_id: event.target.value });
@@ -15697,6 +15748,7 @@ function App() {
                   Payment Account
                   <select
                     required
+                    disabled={Boolean(allocatingExpensePaymentId)}
                     value={expensePaymentForm.payment_account_id}
                     onChange={(event) =>
                       setExpensePaymentForm({ ...expensePaymentForm, payment_account_id: event.target.value })
@@ -15716,6 +15768,7 @@ function App() {
                     <input
                       required
                       type="date"
+                      disabled={Boolean(allocatingExpensePaymentId)}
                       value={expensePaymentForm.payment_date}
                       onChange={(event) =>
                         setExpensePaymentForm({ ...expensePaymentForm, payment_date: event.target.value })
@@ -15729,6 +15782,7 @@ function App() {
                       type="number"
                       min="0.01"
                       step="0.01"
+                      disabled={Boolean(allocatingExpensePaymentId)}
                       value={expensePaymentForm.amount}
                       onChange={(event) =>
                         setExpensePaymentForm({ ...expensePaymentForm, amount: event.target.value })
@@ -15740,6 +15794,7 @@ function App() {
                   <label>
                     Mode
                     <select
+                      disabled={Boolean(allocatingExpensePaymentId)}
                       value={expensePaymentForm.payment_mode}
                       onChange={(event) =>
                         setExpensePaymentForm({ ...expensePaymentForm, payment_mode: event.target.value })
@@ -15755,6 +15810,7 @@ function App() {
                   <label>
                     Reference
                     <input
+                      disabled={Boolean(allocatingExpensePaymentId)}
                       value={expensePaymentForm.reference_number}
                       onChange={(event) =>
                         setExpensePaymentForm({ ...expensePaymentForm, reference_number: event.target.value })
@@ -15826,7 +15882,7 @@ function App() {
                     expensePaymentAllocatedTotal > Number(expensePaymentForm.amount)
                   }
                 >
-                  {isSaving ? "Saving" : "Record Expense Payment"}
+                  {isSaving ? "Saving" : allocatingExpensePaymentId ? "Allocate Payment" : "Record Expense Payment"}
                 </button>
               </form>
               <section className="data-panel">
@@ -15846,6 +15902,7 @@ function App() {
                         <th>Unapplied</th>
                         <th>Mode</th>
                         <th>Status</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -15859,12 +15916,22 @@ function App() {
                             <td>{payment.unapplied_amount}</td>
                             <td>{payment.payment_mode}</td>
                             <td><StatusPill status={payment.status} /></td>
+                            <td>
+                              <button
+                                type="button"
+                                className="secondary compact"
+                                disabled={payment.status !== "paid" || Number(payment.unapplied_amount) <= 0}
+                                onClick={() => startAllocateExpensePayment(payment)}
+                              >
+                                Allocate
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
                       {!expensePayments.length && !isLoadingExpensePayments ? (
                         <tr>
-                          <td colSpan={6} className="empty-cell">
+                          <td colSpan={7} className="empty-cell">
                             No expense payments recorded yet.
                           </td>
                         </tr>

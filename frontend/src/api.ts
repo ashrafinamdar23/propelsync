@@ -1006,6 +1006,10 @@ export type ExpensePaymentPayload = {
   allocations: ExpensePaymentAllocationPayload[];
 };
 
+export type ExpensePaymentAllocationRequest = {
+  allocations: ExpensePaymentAllocationPayload[];
+};
+
 export type JournalEntry = {
   id: string;
   tenant_id: string;
@@ -2873,6 +2877,24 @@ export function createExpensePayment(
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function allocateExpensePayment(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  expensePaymentId: string,
+  payload: ExpensePaymentAllocationRequest
+): Promise<ExpensePayment> {
+  return tenantApiRequest<ExpensePayment>(
+    `/societies/${societyId}/expense-payments/${expensePaymentId}/allocate`,
+    token,
+    tenantId,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
 }
 
 export function listJournals(token: string, tenantId: string, societyId: string): Promise<JournalEntry[]> {

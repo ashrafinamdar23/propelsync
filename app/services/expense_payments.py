@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ChartOfAccount, Expense, ExpensePayment, ExpensePaymentAllocation, JournalEntry, JournalLine, Society, User, Vendor
-from app.schemas.expense_payment import ExpensePaymentCreate
+from app.schemas.expense_payment import ExpensePaymentAllocateRequest, ExpensePaymentCreate
 from app.services.audit import record_audit_log
 from app.tenants.context import TenantContext
 
@@ -196,7 +196,8 @@ def load_allocated_expenses(
     *,
     tenant_context: TenantContext,
     society_id: uuid.UUID,
-    payload: ExpensePaymentCreate,
+    payload: ExpensePaymentCreate | ExpensePaymentAllocateRequest,
+    vendor_id: uuid.UUID | None = None,
 ) -> dict[uuid.UUID, Expense]:
     expense_ids = [allocation.expense_id for allocation in payload.allocations]
     if not expense_ids:
@@ -217,9 +218,10 @@ def load_allocated_expenses(
     }
     if set(expense_ids) != set(expenses):
         raise ExpensePaymentAllocationInvalidError("All allocated expenses must be open and belong to this society.")
-    if payload.vendor_id is not None:
+    selected_vendor_id = getattr(payload, "vendor_id", vendor_id)
+    if selected_vendor_id is not None:
         for expense in expenses.values():
-            if expense.vendor_id != payload.vendor_id:
+            if expense.vendor_id != selected_vendor_id:
                 raise ExpensePaymentAllocationInvalidError("Allocated expenses must belong to the selected vendor.")
     return expenses
 
@@ -300,6 +302,78 @@ def create_expense_payment(
         metadata={
             "society_id": str(society_id),
             "vendor_id": str(payment.vendor_id) if payment.vendor_id else None,
+            "allocated_amount": str(total_allocated),
+            "unapplied_amount": str(payment.unapplied_amount),
+        },
+    )
+    session.commit()
+    session.refresh(payment)
+    return payment
+
+
+def allocate_existing_expense_payment(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    expense_payment_id: uuid.UUID,
+    payload: ExpensePaymentAllocateRequest,
+    actor: User,
+) -> ExpensePayment:
+    ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    payment = session.scalar(
+        select(ExpensePayment)
+        .where(
+            ExpensePayment.id == expense_payment_id,
+            ExpensePayment.tenant_id == tenant_context.tenant_id,
+            ExpensePayment.society_id == society_id,
+            ExpensePayment.status == "paid",
+        )
+        .with_for_update()
+    )
+    if payment is None:
+        raise ExpensePaymentReferenceInvalidError("Expense payment not found.")
+    if payment.unapplied_amount <= Decimal("0.00"):
+        raise ExpensePaymentAllocationInvalidError("Expense payment has no unapplied amount.")
+
+    expenses = load_allocated_expenses(
+        session,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        payload=payload,
+        vendor_id=payment.vendor_id,
+    )
+    total_allocated = money(sum((allocation.allocated_amount for allocation in payload.allocations), Decimal("0.00")))
+    if total_allocated <= Decimal("0.00"):
+        raise ExpensePaymentAllocationInvalidError("Allocation amount must be greater than zero.")
+    if total_allocated > payment.unapplied_amount:
+        raise ExpensePaymentAllocationInvalidError("Allocation cannot exceed unapplied payment amount.")
+
+    for allocation in payload.allocations:
+        allocated_amount = money(allocation.allocated_amount)
+        expense = expenses[allocation.expense_id]
+        update_expense_after_payment(expense, allocated_amount)
+        session.add(
+            ExpensePaymentAllocation(
+                tenant_id=tenant_context.tenant_id,
+                society_id=society_id,
+                expense_payment_id=payment.id,
+                expense_id=expense.id,
+                allocated_amount=allocated_amount,
+                status="active",
+            )
+        )
+    payment.unapplied_amount = money(payment.unapplied_amount - total_allocated)
+    record_audit_log(
+        session,
+        action="expense_payment.allocated",
+        entity_type="ExpensePayment",
+        entity_id=payment.id,
+        actor_user_id=actor.id,
+        tenant_id=tenant_context.tenant_id,
+        summary=f"Expense payment allocated: {total_allocated}",
+        metadata={
+            "society_id": str(society_id),
             "allocated_amount": str(total_allocated),
             "unapplied_amount": str(payment.unapplied_amount),
         },

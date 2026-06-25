@@ -31,6 +31,17 @@ class ExpensePaymentCreate(BaseModel):
         return self
 
 
+class ExpensePaymentAllocateRequest(BaseModel):
+    allocations: list[ExpensePaymentAllocationCreate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_allocations(self) -> "ExpensePaymentAllocateRequest":
+        expense_ids = [allocation.expense_id for allocation in self.allocations]
+        if len(expense_ids) != len(set(expense_ids)):
+            raise ValueError("Expense allocation rows must be unique.")
+        return self
+
+
 class ExpensePaymentAllocationRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.deps import get_db
 from app.models import ExpensePayment
 from app.schemas.expense_payment import (
+    ExpensePaymentAllocateRequest,
     ExpensePaymentAllocationRead,
     ExpensePaymentCreate,
     ExpensePaymentDetailRead,
@@ -17,6 +18,7 @@ from app.services.expense_payments import (
     ExpensePaymentJournalPostingError,
     ExpensePaymentReferenceInvalidError,
     ExpensePaymentSocietyNotFoundError,
+    allocate_existing_expense_payment,
     create_expense_payment,
     list_expense_payment_allocations,
     list_expense_payments,
@@ -67,6 +69,40 @@ def create_society_expense_payment(
         ExpensePaymentAllocationInvalidError,
         ExpensePaymentJournalPostingError,
     ) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    allocations = list_expense_payment_allocations(
+        db,
+        tenant_context=tenant_context,
+        society_id=society_id,
+        expense_payment_id=payment.id,
+    )
+    data = ExpensePaymentRead.model_validate(payment).model_dump()
+    data["allocations"] = [ExpensePaymentAllocationRead.model_validate(allocation) for allocation in allocations]
+    return ExpensePaymentDetailRead.model_validate(data)
+
+
+@router.post("/{expense_payment_id}/allocate", response_model=ExpensePaymentDetailRead)
+def allocate_society_expense_payment(
+    society_id: uuid.UUID,
+    expense_payment_id: uuid.UUID,
+    payload: ExpensePaymentAllocateRequest,
+    tenant_context: Annotated[TenantContext, Depends(require_society_admin_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ExpensePaymentDetailRead:
+    try:
+        payment = allocate_existing_expense_payment(
+            db,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            expense_payment_id=expense_payment_id,
+            payload=payload,
+            actor=tenant_context.user,
+        )
+    except ExpensePaymentSocietyNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Society not found.") from exc
+    except ExpensePaymentReferenceInvalidError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ExpensePaymentAllocationInvalidError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     allocations = list_expense_payment_allocations(
         db,

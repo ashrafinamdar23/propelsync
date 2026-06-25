@@ -653,16 +653,21 @@ Society admin routes:
 ```text
 GET /api/v1/societies/{society_id}/expense-payments
 POST /api/v1/societies/{society_id}/expense-payments
+POST /api/v1/societies/{society_id}/expense-payments/{expense_payment_id}/allocate
 ```
 
 Expense payments allocate cash/bank outflows to one or more open expenses. A payment can partially
 pay an expense, fully pay an expense, or leave an unapplied amount for a later vendor advance
-workflow. Payment creation updates `amount_paid`, `amount_due`, and `payment_status` on allocated
-expenses in the same transaction.
+workflow. If a payment was recorded before the bill/expense existed, the later allocation endpoint
+can consume the unapplied amount and map it to open expenses for the same vendor. Payment creation
+or later allocation updates `amount_paid`, `amount_due`, and `payment_status` on allocated expenses
+in the same transaction.
 
 Expense payment creation posts a linked journal entry in the same transaction. The journal debits
 the society payable account and credits the selected payment account. Creation fails if the payable
 account is missing/inactive or the selected payment account is not an active asset account.
+Later allocation does not post another journal because the cash/bank movement was already posted
+when the payment was recorded.
 
 ## Journal APIs
 
