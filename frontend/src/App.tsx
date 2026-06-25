@@ -252,6 +252,7 @@ type Workspace =
   | "chargeTypes"
   | "expenseCategories"
   | "expenses"
+  | "expensePayments"
   | "numberingSettings"
   | "billingRules"
   | "lateFeeRules"
@@ -552,8 +553,42 @@ const paymentRegisterFilterDefaults = {
   page_size: 50
 };
 
+const expenseFilterDefaults = {
+  month: "",
+  expense_date_from: "",
+  expense_date_to: "",
+  vendor_id: "",
+  expense_category_id: "",
+  expense_type: "",
+  status: "",
+  payment_status: "",
+  sort_by: "expense_date",
+  sort_direction: "desc" as "asc" | "desc",
+  page: 1,
+  page_size: 50
+};
+
+const expensePaymentFilterDefaults = {
+  month: "",
+  payment_date_from: "",
+  payment_date_to: "",
+  vendor_id: "",
+  payment_account_id: "",
+  payment_mode: "",
+  status: "",
+  unapplied_only: false,
+  sort_by: "payment_date",
+  sort_direction: "desc" as "asc" | "desc",
+  page: 1,
+  page_size: 50
+};
+
 const paymentModes = ["cash", "bank_transfer", "cheque", "upi", "card", "other"];
 const paymentStatuses = ["received", "reversed"];
+const expenseStatuses = ["recorded", "approved", "cancelled"];
+const expensePaymentStatuses = ["paid", "reversed"];
+const expenseTypes = ["vendor_bill", "cash_expense", "other"];
+const expensePaidStatuses = ["unpaid", "partially_paid", "paid"];
 const otherIncomePayerTypes = ["bank", "vendor", "resident", "external_party", "other"];
 
 const chartOfAccountFormDefaults = {
@@ -1139,6 +1174,9 @@ function App() {
   const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
   const [isLoadingVendors, setIsLoadingVendors] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expenseFilters, setExpenseFilters] = useState(expenseFilterDefaults);
+  const [expenseTotalItems, setExpenseTotalItems] = useState(0);
+  const [expenseTotalPages, setExpenseTotalPages] = useState(0);
   const [expenseForm, setExpenseForm] = useState({
     ...expenseFormDefaults,
     expense_date: todayIsoDate(),
@@ -1147,6 +1185,9 @@ function App() {
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [isLoadingExpenses, setIsLoadingExpenses] = useState(false);
   const [expensePayments, setExpensePayments] = useState<ExpensePayment[]>([]);
+  const [expensePaymentFilters, setExpensePaymentFilters] = useState(expensePaymentFilterDefaults);
+  const [expensePaymentTotalItems, setExpensePaymentTotalItems] = useState(0);
+  const [expensePaymentTotalPages, setExpensePaymentTotalPages] = useState(0);
   const [expensePaymentForm, setExpensePaymentForm] = useState({
     ...expensePaymentFormDefaults,
     payment_date: todayIsoDate()
@@ -1253,6 +1294,7 @@ function App() {
   const isExpenseCategoryFormOpen =
     formWorkspace === "expenseCategories" || Boolean(editingExpenseCategoryId);
   const isExpenseFormOpen = formWorkspace === "expenses" || Boolean(editingExpenseId);
+  const isExpensePaymentFormOpen = formWorkspace === "expensePayments" || Boolean(allocatingExpensePaymentId);
   const isBillingRuleFormOpen = formWorkspace === "billingRules" || Boolean(editingBillingRuleId);
   const isLateFeeRuleFormOpen = formWorkspace === "lateFeeRules" || Boolean(editingLateFeeRuleId);
   const isWingFormOpen = formWorkspace === "wings" || Boolean(editingWingId);
@@ -1279,6 +1321,7 @@ function App() {
     (workspace === "chargeTypes" && isChargeTypeFormOpen) ||
     (workspace === "expenseCategories" && isExpenseCategoryFormOpen) ||
     (workspace === "expenses" && isExpenseFormOpen) ||
+    (workspace === "expensePayments" && isExpensePaymentFormOpen) ||
     (workspace === "billingRules" && isBillingRuleFormOpen) ||
     (workspace === "lateFeeRules" && isLateFeeRuleFormOpen) ||
     (workspace === "wings" && isWingFormOpen) ||
@@ -1319,6 +1362,8 @@ function App() {
                   ? "Add Expense Category"
                 : workspace === "expenses"
                   ? "Add Expense"
+                : workspace === "expensePayments"
+                  ? "Record Payment"
                 : workspace === "numberingSettings"
                   ? ""
                 : workspace === "billingRules"
@@ -1355,6 +1400,7 @@ function App() {
     (workspace === "chargeTypes" && Boolean(selectedSocietyId)) ||
     (workspace === "expenseCategories" && Boolean(selectedSocietyId)) ||
     (workspace === "expenses" && Boolean(selectedSocietyId)) ||
+    (workspace === "expensePayments" && Boolean(selectedSocietyId)) ||
     (workspace === "numberingSettings" && Boolean(selectedSocietyId)) ||
     (workspace === "billingRules" && Boolean(selectedSocietyId)) ||
     (workspace === "lateFeeRules" && Boolean(selectedSocietyId)) ||
@@ -2163,44 +2209,121 @@ function App() {
   const refreshExpenses = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
-    authToken = token
+    authToken = token,
+    filters = expenseFilters
   ) => {
     if (!tenantId || !societyId) {
       setExpenses([]);
+      setExpenseTotalItems(0);
+      setExpenseTotalPages(0);
       return;
     }
 
     setIsLoadingExpenses(true);
     setError("");
     try {
-      setExpenses(await listExpenses(authToken, tenantId, societyId));
+      const response = await listExpenses(authToken, tenantId, societyId, {
+        vendor_id: filters.vendor_id || undefined,
+        expense_category_id: filters.expense_category_id || undefined,
+        expense_type: filters.expense_type || undefined,
+        status: filters.status || undefined,
+        payment_status: filters.payment_status || undefined,
+        expense_date_from: filters.expense_date_from || undefined,
+        expense_date_to: filters.expense_date_to || undefined,
+        sort_by: filters.sort_by,
+        sort_direction: filters.sort_direction,
+        page: filters.page,
+        page_size: filters.page_size
+      });
+      setExpenses(response.items);
+      setExpenseTotalItems(response.total_items);
+      setExpenseTotalPages(response.total_pages);
+      setExpenseFilters((current) =>
+        current.page === response.page && current.page_size === response.page_size
+          ? current
+          : { ...current, page: response.page, page_size: response.page_size }
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load expenses.");
     } finally {
       setIsLoadingExpenses(false);
     }
-  }, [selectedSocietyId, selectedTenantId, token]);
+  }, [expenseFilters, selectedSocietyId, selectedTenantId, token]);
+
+  const refreshOpenExpensesForPayment = useCallback(async (
+    tenantId = selectedTenantId,
+    societyId = selectedSocietyId,
+    vendorId = expensePaymentForm.vendor_id,
+    authToken = token
+  ) => {
+    if (!tenantId || !societyId) {
+      setExpenses([]);
+      return;
+    }
+    try {
+      const firstPage = await listExpenses(authToken, tenantId, societyId, {
+        vendor_id: vendorId || undefined,
+        page: 1,
+        page_size: 200
+      });
+      let rows = firstPage.items;
+      for (let page = 2; page <= firstPage.total_pages; page += 1) {
+        const response = await listExpenses(authToken, tenantId, societyId, {
+          vendor_id: vendorId || undefined,
+          page,
+          page_size: 200
+        });
+        rows = [...rows, ...response.items];
+      }
+      setExpenses(rows);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load open expenses for payment.");
+    }
+  }, [expensePaymentForm.vendor_id, selectedSocietyId, selectedTenantId, token]);
 
   const refreshExpensePayments = useCallback(async (
     tenantId = selectedTenantId,
     societyId = selectedSocietyId,
-    authToken = token
+    authToken = token,
+    filters = expensePaymentFilters
   ) => {
     if (!tenantId || !societyId) {
       setExpensePayments([]);
+      setExpensePaymentTotalItems(0);
+      setExpensePaymentTotalPages(0);
       return;
     }
 
     setIsLoadingExpensePayments(true);
     setError("");
     try {
-      setExpensePayments(await listExpensePayments(authToken, tenantId, societyId));
+      const response = await listExpensePayments(authToken, tenantId, societyId, {
+        vendor_id: filters.vendor_id || undefined,
+        payment_account_id: filters.payment_account_id || undefined,
+        payment_mode: filters.payment_mode || undefined,
+        status: filters.status || undefined,
+        unapplied_only: filters.unapplied_only || undefined,
+        payment_date_from: filters.payment_date_from || undefined,
+        payment_date_to: filters.payment_date_to || undefined,
+        sort_by: filters.sort_by,
+        sort_direction: filters.sort_direction,
+        page: filters.page,
+        page_size: filters.page_size
+      });
+      setExpensePayments(response.items);
+      setExpensePaymentTotalItems(response.total_items);
+      setExpensePaymentTotalPages(response.total_pages);
+      setExpensePaymentFilters((current) =>
+        current.page === response.page && current.page_size === response.page_size
+          ? current
+          : { ...current, page: response.page, page_size: response.page_size }
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load expense payments.");
     } finally {
       setIsLoadingExpensePayments(false);
     }
-  }, [selectedSocietyId, selectedTenantId, token]);
+  }, [expensePaymentFilters, selectedSocietyId, selectedTenantId, token]);
 
   const refreshOutstanding = useCallback(async (
     tenantId = selectedTenantId,
@@ -2738,12 +2861,86 @@ function App() {
   ]);
 
   useEffect(() => {
+    if (
+      sessionState !== "authenticated" ||
+      !token ||
+      !selectedTenantId ||
+      !selectedSocietyId ||
+      workspace !== "expensePayments"
+    ) {
+      return;
+    }
+    void refreshOpenExpensesForPayment(
+      selectedTenantId,
+      selectedSocietyId,
+      expensePaymentForm.vendor_id,
+      token
+    );
+  }, [
+    expensePaymentForm.vendor_id,
+    refreshOpenExpensesForPayment,
+    selectedSocietyId,
+    selectedTenantId,
+    sessionState,
+    token,
+    workspace
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionState !== "authenticated" ||
+      !token ||
+      !selectedTenantId ||
+      !selectedSocietyId ||
+      workspace !== "expenses"
+    ) {
+      return;
+    }
+    void refreshExpenses(selectedTenantId, selectedSocietyId, token, expenseFilters);
+  }, [
+    expenseFilters,
+    refreshExpenses,
+    selectedSocietyId,
+    selectedTenantId,
+    sessionState,
+    token,
+    workspace
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionState !== "authenticated" ||
+      !token ||
+      !selectedTenantId ||
+      !selectedSocietyId ||
+      workspace !== "expensePayments"
+    ) {
+      return;
+    }
+    void refreshExpensePayments(selectedTenantId, selectedSocietyId, token, expensePaymentFilters);
+  }, [
+    expensePaymentFilters,
+    refreshExpensePayments,
+    selectedSocietyId,
+    selectedTenantId,
+    sessionState,
+    token,
+    workspace
+  ]);
+
+  useEffect(() => {
     setAccountLedger(null);
     setAccountLedgerFilters(accountLedgerFilterDefaults);
     setPaymentRegisterRows([]);
     setPaymentRegisterFilters(paymentRegisterFilterDefaults);
     setPaymentRegisterTotalItems(0);
     setPaymentRegisterTotalPages(0);
+    setExpenseFilters(expenseFilterDefaults);
+    setExpensePaymentFilters(expensePaymentFilterDefaults);
+    setExpenseTotalItems(0);
+    setExpenseTotalPages(0);
+    setExpensePaymentTotalItems(0);
+    setExpensePaymentTotalPages(0);
     setFlatLedger(null);
     setFlatLedgerFilters(flatLedgerFilterDefaults);
     setTrialBalance(null);
@@ -4836,7 +5033,7 @@ function App() {
       setExpensePaymentAllocations({});
       setAllocatingExpensePaymentId(null);
       setNotice(allocatingExpensePaymentId ? "Expense payment allocated." : "Expense payment recorded.");
-      await refreshExpenses(selectedTenantId, selectedSocietyId, authToken);
+      await refreshOpenExpensesForPayment(selectedTenantId, selectedSocietyId, expensePaymentForm.vendor_id, authToken);
       await refreshExpensePayments(selectedTenantId, selectedSocietyId, authToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save expense payment.");
@@ -5304,8 +5501,8 @@ function App() {
   }
 
   function startAllocateExpensePayment(payment: ExpensePayment) {
-    setWorkspace("expenses");
-    setFormWorkspace(null);
+    setWorkspace("expensePayments");
+    setFormWorkspace("expensePayments");
     setAllocatingExpensePaymentId(payment.id);
     setExpensePaymentAllocations({});
     setNotice("");
@@ -5933,7 +6130,6 @@ function App() {
     setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
     setExpensePaymentAllocations({});
     setAllocatingExpensePaymentId(null);
-    setAllocatingExpensePaymentId(null);
     setOwnershipForm(ownershipFormDefaults);
     setResidentForm(residentFormDefaults);
     setLeaseAgreementForm(leaseAgreementFormDefaults);
@@ -6002,7 +6198,6 @@ function App() {
     setExpenseForm({ ...expenseFormDefaults, expense_date: todayIsoDate(), due_date: todayIsoDate() });
     setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
     setExpensePaymentAllocations({});
-    setAllocatingExpensePaymentId(null);
     setAllocatingExpensePaymentId(null);
     setOwnershipForm(ownershipFormDefaults);
     setResidentForm(residentFormDefaults);
@@ -6128,6 +6323,10 @@ function App() {
     } else if (workspace === "expenses") {
       setEditingExpenseId(null);
       setExpenseForm({ ...expenseFormDefaults, expense_date: todayIsoDate(), due_date: todayIsoDate() });
+    } else if (workspace === "expensePayments") {
+      setAllocatingExpensePaymentId(null);
+      setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
+      setExpensePaymentAllocations({});
     } else if (workspace === "ownerships") {
       setEditingOwnershipId(null);
       setOwnershipForm({ ...ownershipFormDefaults, effective_from: todayIsoDate() });
@@ -6205,6 +6404,10 @@ function App() {
     } else if (workspace === "expenses") {
       setEditingExpenseId(null);
       setExpenseForm({ ...expenseFormDefaults, expense_date: todayIsoDate(), due_date: todayIsoDate() });
+    } else if (workspace === "expensePayments") {
+      setAllocatingExpensePaymentId(null);
+      setExpensePaymentForm({ ...expensePaymentFormDefaults, payment_date: todayIsoDate() });
+      setExpensePaymentAllocations({});
     } else if (workspace === "ownerships") {
       setEditingOwnershipId(null);
       setOwnershipForm({ ...ownershipFormDefaults, effective_from: todayIsoDate() });
@@ -7170,6 +7373,16 @@ function App() {
                   <span className="nav-icon">X</span>
                   <span className="nav-text">Expenses</span>
                 </button>
+                <button
+                  type="button"
+                  className={`nav-item ${workspace === "expensePayments" ? "active" : ""}`}
+                  disabled={!selectedSocietyId}
+                  onClick={() => setWorkspace("expensePayments")}
+                  title="Expense Payments"
+                >
+                  <span className="nav-icon">K</span>
+                  <span className="nav-text">Expense Payments</span>
+                </button>
               </div>
             ) : null}
           </div>
@@ -7307,6 +7520,8 @@ function App() {
                           ? "Vendor Management"
                         : workspace === "expenses"
                           ? "Expenses"
+                        : workspace === "expensePayments"
+                          ? "Expense Payments"
                         : workspace === "wings"
                           ? "Wing Management"
                           : workspace === "flats"
@@ -15627,12 +15842,251 @@ function App() {
               </form>
               ) : null}
 
+              <section className="filter-panel">
+                <div className="section-heading">
+                  <h2>Expense Filters</h2>
+                  <span className="record-count">Blank filters show all expenses</span>
+                </div>
+                <div className="form-grid">
+                  <label>
+                    Month
+                    <input
+                      type="month"
+                      value={expenseFilters.month}
+                      onChange={(event) => {
+                        const month = event.target.value;
+                        const range = monthDateRange(month);
+                        setExpenseFilters((current) => ({
+                          ...current,
+                          month,
+                          expense_date_from: range.from,
+                          expense_date_to: range.to,
+                          page: 1
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Date From
+                    <input
+                      type="date"
+                      value={expenseFilters.expense_date_from}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({
+                          ...current,
+                          month: "",
+                          expense_date_from: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Date To
+                    <input
+                      type="date"
+                      value={expenseFilters.expense_date_to}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({
+                          ...current,
+                          month: "",
+                          expense_date_to: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Vendor
+                    <select
+                      value={expenseFilters.vendor_id}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({ ...current, vendor_id: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All vendors</option>
+                      {vendors.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>
+                          {vendor.vendor_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Category
+                    <select
+                      value={expenseFilters.expense_category_id}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({
+                          ...current,
+                          expense_category_id: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="">All categories</option>
+                      {expenseCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Type
+                    <select
+                      value={expenseFilters.expense_type}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({ ...current, expense_type: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All types</option>
+                      {expenseTypes.map((expenseType) => (
+                        <option key={expenseType} value={expenseType}>
+                          {expenseType}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Status
+                    <select
+                      value={expenseFilters.status}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({ ...current, status: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All statuses</option>
+                      {expenseStatuses.map((statusValue) => (
+                        <option key={statusValue} value={statusValue}>
+                          {statusValue}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Payment
+                    <select
+                      value={expenseFilters.payment_status}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({ ...current, payment_status: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All payment statuses</option>
+                      {expensePaidStatuses.map((statusValue) => (
+                        <option key={statusValue} value={statusValue}>
+                          {statusValue}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Sort By
+                    <select
+                      value={expenseFilters.sort_by}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({ ...current, sort_by: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="expense_date">Expense Date</option>
+                      <option value="due_date">Due Date</option>
+                      <option value="total_amount">Total</option>
+                      <option value="amount_due">Due</option>
+                      <option value="status">Status</option>
+                      <option value="payment_status">Payment</option>
+                    </select>
+                  </label>
+                  <label>
+                    Direction
+                    <select
+                      value={expenseFilters.sort_direction}
+                      onChange={(event) =>
+                        setExpenseFilters((current) => ({
+                          ...current,
+                          sort_direction: event.target.value as "asc" | "desc",
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    disabled={isLoadingExpenses}
+                    onClick={() => {
+                      const nextFilters = { ...expenseFilters, page: 1 };
+                      setExpenseFilters(nextFilters);
+                      void refreshExpenses(selectedTenantId, selectedSocietyId, token, nextFilters);
+                    }}
+                  >
+                    Apply Filters
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={isLoadingExpenses}
+                    onClick={() => {
+                      setExpenseFilters(expenseFilterDefaults);
+                      void refreshExpenses(selectedTenantId, selectedSocietyId, token, expenseFilterDefaults);
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </section>
+
               <section className="data-panel">
                 <div className="section-heading">
                   <h2>Expense Registry</h2>
-                  <span className="record-count">
-                    {isLoadingExpenses ? "Loading" : `${expenses.length} records`}
-                  </span>
+                  <div className="row-actions">
+                    <label className="compact-field">
+                      Rows
+                      <select
+                        value={expenseFilters.page_size}
+                        onChange={(event) => {
+                          const nextFilters = { ...expenseFilters, page: 1, page_size: Number(event.target.value) };
+                          setExpenseFilters(nextFilters);
+                          void refreshExpenses(selectedTenantId, selectedSocietyId, token, nextFilters);
+                        }}
+                      >
+                        {[25, 50, 100, 200].map((size) => (
+                          <option key={size} value={size}>{size}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      disabled={isLoadingExpenses || expenseFilters.page <= 1}
+                      onClick={() => {
+                        const nextFilters = { ...expenseFilters, page: Math.max(expenseFilters.page - 1, 1) };
+                        setExpenseFilters(nextFilters);
+                        void refreshExpenses(selectedTenantId, selectedSocietyId, token, nextFilters);
+                      }}
+                    >
+                      Previous
+                    </button>
+                    <span className="record-count">Page {expenseFilters.page} of {Math.max(expenseTotalPages, 1)}</span>
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      disabled={isLoadingExpenses || expenseFilters.page >= Math.max(expenseTotalPages, 1)}
+                      onClick={() => {
+                        const nextFilters = { ...expenseFilters, page: expenseFilters.page + 1 };
+                        setExpenseFilters(nextFilters);
+                        void refreshExpenses(selectedTenantId, selectedSocietyId, token, nextFilters);
+                      }}
+                    >
+                      Next
+                    </button>
+                    <span className="record-count">
+                      {isLoadingExpenses ? "Loading" : `${expenseTotalItems} records`}
+                    </span>
+                  </div>
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -15707,6 +16161,10 @@ function App() {
                   </table>
                 </div>
               </section>
+            </section>
+          ) : workspace === "expensePayments" ? (
+            <section className={`workspace ${isExpensePaymentFormOpen ? "" : "registry-only"}`}>
+              {isExpensePaymentFormOpen ? (
               <form className="panel-form" onSubmit={handleExpensePaymentSubmit}>
                 <div className="form-title-row">
                   <h2>{allocatingExpensePaymentId ? "Allocate Expense Payment" : "Record Expense Payment"}</h2>
@@ -15885,12 +16343,273 @@ function App() {
                   {isSaving ? "Saving" : allocatingExpensePaymentId ? "Allocate Payment" : "Record Expense Payment"}
                 </button>
               </form>
+              ) : null}
+              <section className="filter-panel">
+                <div className="section-heading">
+                  <h2>Expense Payment Filters</h2>
+                  <span className="record-count">Blank filters show all payments</span>
+                </div>
+                <div className="form-grid">
+                  <label>
+                    Month
+                    <input
+                      type="month"
+                      value={expensePaymentFilters.month}
+                      onChange={(event) => {
+                        const month = event.target.value;
+                        const range = monthDateRange(month);
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          month,
+                          payment_date_from: range.from,
+                          payment_date_to: range.to,
+                          page: 1
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Paid From
+                    <input
+                      type="date"
+                      value={expensePaymentFilters.payment_date_from}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          month: "",
+                          payment_date_from: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Paid To
+                    <input
+                      type="date"
+                      value={expensePaymentFilters.payment_date_to}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          month: "",
+                          payment_date_to: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Vendor
+                    <select
+                      value={expensePaymentFilters.vendor_id}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({ ...current, vendor_id: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All vendors</option>
+                      {vendors.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>
+                          {vendor.vendor_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Account
+                    <select
+                      value={expensePaymentFilters.payment_account_id}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          payment_account_id: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="">All accounts</option>
+                      {activeAssetAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.account_code} - {account.account_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Mode
+                    <select
+                      value={expensePaymentFilters.payment_mode}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          payment_mode: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="">All modes</option>
+                      {paymentModes.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {mode}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Status
+                    <select
+                      value={expensePaymentFilters.status}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({ ...current, status: event.target.value, page: 1 }))
+                      }
+                    >
+                      <option value="">All statuses</option>
+                      {expensePaymentStatuses.map((statusValue) => (
+                        <option key={statusValue} value={statusValue}>
+                          {statusValue}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Sort By
+                    <select
+                      value={expensePaymentFilters.sort_by}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          sort_by: event.target.value,
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="payment_date">Payment Date</option>
+                      <option value="amount">Amount</option>
+                      <option value="unapplied_amount">Unapplied</option>
+                      <option value="payment_mode">Mode</option>
+                      <option value="status">Status</option>
+                    </select>
+                  </label>
+                  <label>
+                    Direction
+                    <select
+                      value={expensePaymentFilters.sort_direction}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          sort_direction: event.target.value as "asc" | "desc",
+                          page: 1
+                        }))
+                      }
+                    >
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={expensePaymentFilters.unapplied_only}
+                      onChange={(event) =>
+                        setExpensePaymentFilters((current) => ({
+                          ...current,
+                          unapplied_only: event.target.checked,
+                          page: 1
+                        }))
+                      }
+                    />
+                    Unapplied only
+                  </label>
+                </div>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    disabled={isLoadingExpensePayments}
+                    onClick={() => {
+                      const nextFilters = { ...expensePaymentFilters, page: 1 };
+                      setExpensePaymentFilters(nextFilters);
+                      void refreshExpensePayments(selectedTenantId, selectedSocietyId, token, nextFilters);
+                    }}
+                  >
+                    Apply Filters
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={isLoadingExpensePayments}
+                    onClick={() => {
+                      setExpensePaymentFilters(expensePaymentFilterDefaults);
+                      void refreshExpensePayments(
+                        selectedTenantId,
+                        selectedSocietyId,
+                        token,
+                        expensePaymentFilterDefaults
+                      );
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </section>
               <section className="data-panel">
                 <div className="section-heading">
                   <h2>Expense Payment Registry</h2>
-                  <span className="record-count">
-                    {isLoadingExpensePayments ? "Loading" : `${expensePayments.length} records`}
-                  </span>
+                  <div className="row-actions">
+                    <label className="compact-field">
+                      Rows
+                      <select
+                        value={expensePaymentFilters.page_size}
+                        onChange={(event) => {
+                          const nextFilters = {
+                            ...expensePaymentFilters,
+                            page: 1,
+                            page_size: Number(event.target.value)
+                          };
+                          setExpensePaymentFilters(nextFilters);
+                          void refreshExpensePayments(selectedTenantId, selectedSocietyId, token, nextFilters);
+                        }}
+                      >
+                        {[25, 50, 100, 200].map((size) => (
+                          <option key={size} value={size}>{size}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      disabled={isLoadingExpensePayments || expensePaymentFilters.page <= 1}
+                      onClick={() => {
+                        const nextFilters = {
+                          ...expensePaymentFilters,
+                          page: Math.max(expensePaymentFilters.page - 1, 1)
+                        };
+                        setExpensePaymentFilters(nextFilters);
+                        void refreshExpensePayments(selectedTenantId, selectedSocietyId, token, nextFilters);
+                      }}
+                    >
+                      Previous
+                    </button>
+                    <span className="record-count">
+                      Page {expensePaymentFilters.page} of {Math.max(expensePaymentTotalPages, 1)}
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      disabled={
+                        isLoadingExpensePayments ||
+                        expensePaymentFilters.page >= Math.max(expensePaymentTotalPages, 1)
+                      }
+                      onClick={() => {
+                        const nextFilters = { ...expensePaymentFilters, page: expensePaymentFilters.page + 1 };
+                        setExpensePaymentFilters(nextFilters);
+                        void refreshExpensePayments(selectedTenantId, selectedSocietyId, token, nextFilters);
+                      }}
+                    >
+                      Next
+                    </button>
+                    <span className="record-count">
+                      {isLoadingExpensePayments ? "Loading" : `${expensePaymentTotalItems} records`}
+                    </span>
+                  </div>
                 </div>
                 <div className="table-wrap">
                   <table>

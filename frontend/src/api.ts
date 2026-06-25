@@ -972,6 +972,20 @@ export type ExpensePayload = {
   notes?: string | null;
 };
 
+export type ExpenseListFilters = {
+  vendor_id?: string;
+  expense_category_id?: string;
+  expense_type?: string;
+  status?: string;
+  payment_status?: string;
+  expense_date_from?: string;
+  expense_date_to?: string;
+  sort_by?: string;
+  sort_direction?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
+};
+
 export type ExpensePayment = {
   id: string;
   tenant_id: string;
@@ -988,6 +1002,20 @@ export type ExpensePayment = {
   notes: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ExpensePaymentListFilters = {
+  vendor_id?: string;
+  payment_account_id?: string;
+  payment_mode?: string;
+  status?: string;
+  unapplied_only?: boolean;
+  payment_date_from?: string;
+  payment_date_to?: string;
+  sort_by?: string;
+  sort_direction?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
 };
 
 export type ExpensePaymentAllocationPayload = {
@@ -2803,8 +2831,24 @@ export function activateExpenseCategory(
   );
 }
 
-export function listExpenses(token: string, tenantId: string, societyId: string): Promise<Expense[]> {
-  return tenantApiRequest<Expense[]>(`/societies/${societyId}/expenses`, token, tenantId);
+export function listExpenses(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  filters: ExpenseListFilters = {}
+): Promise<PaginatedResponse<Expense>> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return tenantApiRequest<PaginatedResponse<Expense>>(
+    `/societies/${societyId}/expenses${query ? `?${query}` : ""}`,
+    token,
+    tenantId
+  );
 }
 
 export function createExpense(
@@ -2862,9 +2906,21 @@ export function cancelExpense(
 export function listExpensePayments(
   token: string,
   tenantId: string,
-  societyId: string
-): Promise<ExpensePayment[]> {
-  return tenantApiRequest<ExpensePayment[]>(`/societies/${societyId}/expense-payments`, token, tenantId);
+  societyId: string,
+  filters: ExpensePaymentListFilters = {}
+): Promise<PaginatedResponse<ExpensePayment>> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return tenantApiRequest<PaginatedResponse<ExpensePayment>>(
+    `/societies/${societyId}/expense-payments${query ? `?${query}` : ""}`,
+    token,
+    tenantId
+  );
 }
 
 export function createExpensePayment(

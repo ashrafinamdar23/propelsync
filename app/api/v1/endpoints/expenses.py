@@ -1,11 +1,13 @@
 from typing import Annotated
 import uuid
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.deps import get_db
 from app.models import Expense
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.expense import ExpenseCancelRequest, ExpenseCreate, ExpenseRead, ExpenseUpdate
 from app.services.expenses import (
     ExpenseAlreadyExistsError,
@@ -17,7 +19,7 @@ from app.services.expenses import (
     approve_expense,
     cancel_expense,
     create_expense,
-    list_expenses,
+    list_expenses_paginated,
     update_expense,
 )
 from app.tenants.context import TenantContext
@@ -31,17 +33,49 @@ def expense_to_read(expense: Expense) -> ExpenseRead:
     return ExpenseRead.model_validate(expense)
 
 
-@router.get("", response_model=list[ExpenseRead])
+@router.get("", response_model=PaginatedResponse[ExpenseRead])
 def read_expenses(
     society_id: uuid.UUID,
     tenant_context: Annotated[TenantContext, Depends(require_society_admin_context)],
     db: Annotated[Session, Depends(get_db)],
-) -> list[ExpenseRead]:
+    vendor_id: Annotated[uuid.UUID | None, Query()] = None,
+    expense_category_id: Annotated[uuid.UUID | None, Query()] = None,
+    expense_type: Annotated[str | None, Query()] = None,
+    expense_status: Annotated[str | None, Query(alias="status")] = None,
+    payment_status: Annotated[str | None, Query()] = None,
+    expense_date_from: Annotated[date | None, Query()] = None,
+    expense_date_to: Annotated[date | None, Query()] = None,
+    sort_by: Annotated[str, Query()] = "expense_date",
+    sort_direction: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> PaginatedResponse[ExpenseRead]:
     try:
-        expenses = list_expenses(db, tenant_context=tenant_context, society_id=society_id)
+        expenses, total_items = list_expenses_paginated(
+            db,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            vendor_id=vendor_id,
+            expense_category_id=expense_category_id,
+            expense_type=expense_type,
+            status=expense_status,
+            payment_status=payment_status,
+            expense_date_from=expense_date_from,
+            expense_date_to=expense_date_to,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+            page=page,
+            page_size=page_size,
+        )
     except ExpenseSocietyNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Society not found.") from exc
-    return [expense_to_read(expense) for expense in expenses]
+    return PaginatedResponse[ExpenseRead](
+        items=[expense_to_read(expense) for expense in expenses],
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=(total_items + page_size - 1) // page_size,
+    )
 
 
 @router.post("", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)

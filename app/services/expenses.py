@@ -1,7 +1,8 @@
 import uuid
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -319,18 +320,121 @@ def list_expenses(
     *,
     tenant_context: TenantContext,
     society_id: uuid.UUID,
+    vendor_id: uuid.UUID | None = None,
+    expense_category_id: uuid.UUID | None = None,
+    expense_type: str | None = None,
+    status: str | None = None,
+    payment_status: str | None = None,
+    expense_date_from: date | None = None,
+    expense_date_to: date | None = None,
 ) -> list[Expense]:
     ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
-    return list(
+    statement = build_expense_list_statement(
+        tenant_context=tenant_context,
+        society_id=society_id,
+        vendor_id=vendor_id,
+        expense_category_id=expense_category_id,
+        expense_type=expense_type,
+        status=status,
+        payment_status=payment_status,
+        expense_date_from=expense_date_from,
+        expense_date_to=expense_date_to,
+    )
+    return list(session.scalars(apply_expense_sort(statement, sort_by="expense_date", sort_direction="desc")))
+
+
+def build_expense_list_statement(
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    vendor_id: uuid.UUID | None = None,
+    expense_category_id: uuid.UUID | None = None,
+    expense_type: str | None = None,
+    status: str | None = None,
+    payment_status: str | None = None,
+    expense_date_from: date | None = None,
+    expense_date_to: date | None = None,
+) -> Select[tuple[Expense]]:
+    statement = select(Expense).where(
+        Expense.tenant_id == tenant_context.tenant_id,
+        Expense.society_id == society_id,
+    )
+    if vendor_id is not None:
+        statement = statement.where(Expense.vendor_id == vendor_id)
+    if expense_category_id is not None:
+        statement = statement.where(Expense.expense_category_id == expense_category_id)
+    if expense_type:
+        statement = statement.where(Expense.expense_type == expense_type)
+    if status:
+        statement = statement.where(Expense.status == status)
+    if payment_status:
+        statement = statement.where(Expense.payment_status == payment_status)
+    if expense_date_from is not None:
+        statement = statement.where(Expense.expense_date >= expense_date_from)
+    if expense_date_to is not None:
+        statement = statement.where(Expense.expense_date <= expense_date_to)
+    return statement
+
+
+def apply_expense_sort(
+    statement: Select[tuple[Expense]],
+    *,
+    sort_by: str,
+    sort_direction: str,
+) -> Select[tuple[Expense]]:
+    sortable_columns = {
+        "expense_date": Expense.expense_date,
+        "due_date": Expense.due_date,
+        "description": Expense.description,
+        "total_amount": Expense.total_amount,
+        "amount_due": Expense.amount_due,
+        "status": Expense.status,
+        "payment_status": Expense.payment_status,
+        "created_at": Expense.created_at,
+    }
+    sort_column = sortable_columns.get(sort_by, Expense.expense_date)
+    ordered_column = sort_column.asc() if sort_direction == "asc" else sort_column.desc()
+    return statement.order_by(ordered_column, Expense.created_at.desc())
+
+
+def list_expenses_paginated(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    vendor_id: uuid.UUID | None = None,
+    expense_category_id: uuid.UUID | None = None,
+    expense_type: str | None = None,
+    status: str | None = None,
+    payment_status: str | None = None,
+    expense_date_from: date | None = None,
+    expense_date_to: date | None = None,
+    sort_by: str = "expense_date",
+    sort_direction: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[Expense], int]:
+    ensure_society_exists(session, tenant_context=tenant_context, society_id=society_id)
+    statement = build_expense_list_statement(
+        tenant_context=tenant_context,
+        society_id=society_id,
+        vendor_id=vendor_id,
+        expense_category_id=expense_category_id,
+        expense_type=expense_type,
+        status=status,
+        payment_status=payment_status,
+        expense_date_from=expense_date_from,
+        expense_date_to=expense_date_to,
+    )
+    total_items = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    rows = list(
         session.scalars(
-            select(Expense)
-            .where(
-                Expense.tenant_id == tenant_context.tenant_id,
-                Expense.society_id == society_id,
-            )
-            .order_by(Expense.expense_date.desc(), Expense.created_at.desc())
+            apply_expense_sort(statement, sort_by=sort_by, sort_direction=sort_direction)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
     )
+    return rows, total_items
 
 
 def get_expense_or_raise(

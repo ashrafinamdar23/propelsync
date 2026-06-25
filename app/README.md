@@ -646,6 +646,10 @@ credit the selected payment account, and are marked paid immediately. Editing an
 marks the previous journal as `reversed` and posts a replacement journal. Cancelling an unpaid
 expense reverses its linked journal.
 
+The expense list endpoint is paginated and can be filtered by vendor, category, expense type,
+expense status, payment status, expense date range, and sort direction. The frontend keeps this
+as a dedicated Expense Registry screen separate from expense payments.
+
 ## Expense Payment APIs
 
 Society admin routes:
@@ -668,6 +672,11 @@ the society payable account and credits the selected payment account. Creation f
 account is missing/inactive or the selected payment account is not an active asset account.
 Later allocation does not post another journal because the cash/bank movement was already posted
 when the payment was recorded.
+
+The expense payment list endpoint is paginated and can be filtered by vendor, payment account,
+payment mode, payment status, unapplied-only, payment date range, and sort direction. The frontend
+uses a separate Expense Payments screen for payment recording, allocation, filtering, and registry
+review.
 
 ## Journal APIs
 
