@@ -229,6 +229,24 @@ Local Propelsync user row
 Redirect URLs for /propelsync/
 ```
 
+## 7.1 Optional Operational Backfills
+
+After deploying a release that adds a backfill script, always preview first:
+
+```bash
+docker compose -f docker-compose.prod.yml exec api python -m app.scripts.backfill_immediate_expense_payments
+```
+
+If the count is expected, apply it:
+
+```bash
+docker compose -f docker-compose.prod.yml exec api python -m app.scripts.backfill_immediate_expense_payments --apply
+```
+
+This specific backfill creates missing expense payment and allocation rows for old immediate-paid
+cash/direct expenses. It is idempotent: expenses that already have an active payment allocation are
+skipped.
+
 ## 8. Validate Deployment
 
 Gateway health:

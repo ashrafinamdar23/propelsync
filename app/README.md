@@ -64,6 +64,19 @@ docker compose exec api python -m app.scripts.bootstrap_identity
 
 The script is repeatable. It reads bootstrap values from `.env` through Docker Compose.
 
+## Operational Backfills
+
+Backfill missing expense payment rows for immediate-paid cash or other direct-paid expenses:
+
+```powershell
+docker compose exec api python -m app.scripts.backfill_immediate_expense_payments
+docker compose exec api python -m app.scripts.backfill_immediate_expense_payments --apply
+```
+
+Run without `--apply` first. The preview prints the number of eligible expenses. The `--apply` run
+creates missing `expense_payments` and `expense_payment_allocations` rows for paid direct expenses
+that already have a posted expense journal and no active payment allocation.
+
 ## Auth Smoke Checks
 
 Protected routes:
