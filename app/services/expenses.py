@@ -4,7 +4,18 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ChartOfAccount, Expense, ExpenseCategory, JournalEntry, JournalLine, Society, User, Vendor
+from app.models import (
+    ChartOfAccount,
+    Expense,
+    ExpenseCategory,
+    ExpensePayment,
+    ExpensePaymentAllocation,
+    JournalEntry,
+    JournalLine,
+    Society,
+    User,
+    Vendor,
+)
 from app.schemas.expense import ExpenseCreate, ExpenseUpdate
 from app.services.audit import record_audit_log
 from app.tenants.context import TenantContext
@@ -158,6 +169,47 @@ def post_expense_journal(
     )
     expense.journal_entry_id = journal_entry.id
     return journal_entry
+
+
+def create_immediate_expense_payment_record(
+    session: Session,
+    *,
+    tenant_context: TenantContext,
+    society_id: uuid.UUID,
+    expense: Expense,
+) -> ExpensePayment:
+    if expense.payment_account_id is None:
+        raise ExpenseJournalPostingError("Cash expenses require a payment account.")
+    if expense.journal_entry_id is None:
+        raise ExpenseJournalPostingError("Cash expense journal must be posted before recording payment.")
+
+    payment = ExpensePayment(
+        tenant_id=tenant_context.tenant_id,
+        society_id=society_id,
+        vendor_id=expense.vendor_id,
+        payment_account_id=expense.payment_account_id,
+        journal_entry_id=expense.journal_entry_id,
+        payment_date=expense.expense_date,
+        amount=money(expense.total_amount),
+        unapplied_amount=Decimal("0.00"),
+        payment_mode="cash" if expense.expense_type == "cash_expense" else "other",
+        reference_number=expense.reference_number,
+        status="paid",
+        notes=expense.notes,
+    )
+    session.add(payment)
+    session.flush()
+    session.add(
+        ExpensePaymentAllocation(
+            tenant_id=tenant_context.tenant_id,
+            society_id=society_id,
+            expense_payment_id=payment.id,
+            expense_id=expense.id,
+            allocated_amount=money(expense.total_amount),
+            status="active",
+        )
+    )
+    return payment
 
 
 def ensure_society_exists(
@@ -329,8 +381,6 @@ def create_expense(
     )
     if payload.expense_type == "cash_expense" and payload.payment_account_id is None:
         raise ExpenseReferenceInvalidError("Cash expenses require a payment account.")
-    if payload.expense_type == "cash_expense" and payload.payment_account_id is None:
-        raise ExpenseReferenceInvalidError("Cash expenses require a payment account.")
     ensure_vendor_bill_unique(
         session,
         tenant_context=tenant_context,
@@ -372,6 +422,13 @@ def create_expense(
         society_id=society_id,
         expense=expense,
     )
+    if is_cash_posted:
+        create_immediate_expense_payment_record(
+            session,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            expense=expense,
+        )
     record_audit_log(
         session,
         action="expense.created",
@@ -474,6 +531,13 @@ def update_expense(
         society_id=society_id,
         expense=expense,
     )
+    if is_cash_posted:
+        create_immediate_expense_payment_record(
+            session,
+            tenant_context=tenant_context,
+            society_id=society_id,
+            expense=expense,
+        )
     record_audit_log(
         session,
         action="expense.updated",

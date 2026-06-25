@@ -4,7 +4,18 @@ import uuid
 
 import pytest
 
-from app.models import ChartOfAccount, Expense, ExpenseCategory, JournalEntry, JournalLine, Society, User, Vendor
+from app.models import (
+    ChartOfAccount,
+    Expense,
+    ExpenseCategory,
+    ExpensePayment,
+    ExpensePaymentAllocation,
+    JournalEntry,
+    JournalLine,
+    Society,
+    User,
+    Vendor,
+)
 from app.schemas.expense import ExpenseCreate, ExpenseUpdate
 from app.services.expenses import (
     ExpenseAlreadyExistsError,
@@ -319,6 +330,52 @@ def test_create_expense_records_amounts_and_audit_log() -> None:
     assert expense.journal_entry_id is not None
     assert session.committed is True
     assert len(session.added) == 5
+
+
+def test_create_cash_expense_records_immediate_payment() -> None:
+    tenant_id = uuid.uuid4()
+    society_id = uuid.uuid4()
+    actor = build_actor()
+    context = build_context(tenant_id, actor)
+    expense_account = build_expense_account(tenant_id, society_id)
+    payment_account = build_asset_account(tenant_id, society_id)
+    society = Society(id=society_id, tenant_id=tenant_id, name="Green Heights")
+    category = build_category(tenant_id, society_id, expense_account.id)
+    payload = ExpenseCreate(
+        vendor_id=None,
+        expense_category_id=category.id,
+        payment_account_id=payment_account.id,
+        expense_type="cash_expense",
+        reference_number="CASH-001",
+        expense_date=date(2026, 6, 24),
+        due_date=date(2026, 6, 24),
+        description="Diesel",
+        amount=Decimal("1500.00"),
+        tax_amount=Decimal("0.00"),
+    )
+    session = FakeSession(scalar_results=[society, category, payment_account, society, expense_account, payment_account])
+
+    expense = create_expense(
+        session,  # type: ignore[arg-type]
+        tenant_context=context,
+        society_id=society_id,
+        payload=payload,
+        actor=actor,
+    )
+
+    payments = [item for item in session.added if isinstance(item, ExpensePayment)]
+    allocations = [item for item in session.added if isinstance(item, ExpensePaymentAllocation)]
+    assert expense.payment_status == "paid"
+    assert expense.amount_due == Decimal("0.00")
+    assert len(payments) == 1
+    assert payments[0].journal_entry_id == expense.journal_entry_id
+    assert payments[0].payment_account_id == payment_account.id
+    assert payments[0].amount == Decimal("1500.00")
+    assert payments[0].unapplied_amount == Decimal("0.00")
+    assert payments[0].payment_mode == "cash"
+    assert len(allocations) == 1
+    assert allocations[0].expense_id == expense.id
+    assert allocations[0].allocated_amount == Decimal("1500.00")
 
 
 def test_create_expense_rejects_missing_society() -> None:
