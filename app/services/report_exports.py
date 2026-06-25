@@ -114,6 +114,103 @@ def build_xlsx(table: ExportTable) -> bytes:
     return output.getvalue()
 
 
+def safe_sheet_name(name: str, fallback: str) -> str:
+    cleaned = "".join("_" if char in "[]:*?/\\'" else char for char in name).strip()
+    return (cleaned or fallback)[:31]
+
+
+def xlsx_sheet_xml(table: ExportTable) -> str:
+    rows: list[str] = [
+        xlsx_row(1, [table.title], 1),
+        xlsx_row(2, [table.subtitle]),
+        xlsx_row(4, table.headers, 1),
+    ]
+    current_row = 5
+    for row in table.rows:
+        rows.append(xlsx_row(current_row, row))
+        current_row += 1
+    current_row += 1
+    for row in table.footer_rows:
+        rows.append(xlsx_row(current_row, row, 1))
+        current_row += 1
+
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+  <sheetData>{''.join(rows)}</sheetData>
+</worksheet>"""
+
+
+def build_multi_sheet_xlsx(tables: list[ExportTable]) -> bytes:
+    if not tables:
+        raise ValueError("At least one export table is required.")
+
+    styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="0" borderId="0" applyFont="1"/></cellXfs>
+</styleSheet>"""
+
+    sheet_overrides = "\n".join(
+        f'  <Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for index, _ in enumerate(tables, start=1)
+    )
+    sheet_entries = "\n".join(
+        f'    <sheet name="{xml_escape(safe_sheet_name(table.sheet_name, f"Sheet {index}"))}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, table in enumerate(tables, start=1)
+    )
+    sheet_relationships = "\n".join(
+        f'  <Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>'
+        for index, _ in enumerate(tables, start=1)
+    )
+    styles_relationship_id = len(tables) + 1
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as workbook:
+        workbook.writestr(
+            "[Content_Types].xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+{sheet_overrides}
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>""",
+        )
+        workbook.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""",
+        )
+        workbook.writestr(
+            "xl/workbook.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+{sheet_entries}
+  </sheets>
+</workbook>""",
+        )
+        workbook.writestr(
+            "xl/_rels/workbook.xml.rels",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+{sheet_relationships}
+  <Relationship Id="rId{styles_relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>""",
+        )
+        workbook.writestr("xl/styles.xml", styles_xml)
+        for index, table in enumerate(tables, start=1):
+            workbook.writestr(f"xl/worksheets/sheet{index}.xml", xlsx_sheet_xml(table))
+    return output.getvalue()
+
+
 def pdf_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 

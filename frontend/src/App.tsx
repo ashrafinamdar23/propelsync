@@ -56,6 +56,7 @@ import {
   createWing,
   exportBalanceSheetReport,
   exportIncomeExpenseReport,
+  exportMonthlySocietyReport,
   exportAsOfOperationalReport,
   exportPaymentRegister,
   exportPeriodOperationalReport,
@@ -71,6 +72,7 @@ import {
   getInvoice,
   getInvoiceSequence,
   getJournal,
+  getMonthlySocietyReport,
   getMyAccess,
   getOutstandingSummary,
   getScheduledDueWork,
@@ -202,6 +204,7 @@ import {
   type LeaseAgreementPayload,
   type ManagedUser,
   type ManagedUserCreatePayload,
+  type MonthlySocietyReport,
   type OpeningBalanceJournalPayload,
   type ManualInvoicePayload,
   type MyAccess,
@@ -704,7 +707,8 @@ const operationalReportTypes = [
   { value: "collection", label: "Collection Report", mode: "period" },
   { value: "expenses", label: "Expense Report", mode: "period" },
   { value: "defaulters", label: "Defaulter Report", mode: "as_of" },
-  { value: "outstanding", label: "Outstanding Report", mode: "as_of" }
+  { value: "outstanding", label: "Outstanding Report", mode: "as_of" },
+  { value: "monthly", label: "Monthly Society Report", mode: "month" }
 ] as const;
 type OperationalReportType = (typeof operationalReportTypes)[number]["value"];
 type OperationalReportResult =
@@ -712,7 +716,8 @@ type OperationalReportResult =
   | CollectionReport
   | ExpenseOperationalReport
   | DefaulterReport
-  | OutstandingSummary;
+  | OutstandingSummary
+  | MonthlySocietyReport;
 type ReasonDialogState = {
   title: string;
   description: string;
@@ -1131,7 +1136,8 @@ function App() {
   const [operationalReportFilters, setOperationalReportFilters] = useState({
     period_start: todayIsoDate().slice(0, 8) + "01",
     period_end: todayIsoDate(),
-    as_of_date: todayIsoDate()
+    as_of_date: todayIsoDate(),
+    report_month: todayIsoDate().slice(0, 7)
   });
   const [operationalReport, setOperationalReport] = useState<OperationalReportResult | null>(null);
   const [isLoadingOperationalReport, setIsLoadingOperationalReport] = useState(false);
@@ -4574,6 +4580,10 @@ function App() {
       setError("Period start cannot be after period end.");
       return;
     }
+    if (selectedType.mode === "month" && !operationalReportFilters.report_month) {
+      setError("Select a month before loading the monthly report.");
+      return;
+    }
 
     setIsLoadingOperationalReport(true);
     setError("");
@@ -4612,6 +4622,13 @@ function App() {
           selectedSocietyId,
           operationalReportFilters.as_of_date
         );
+      } else if (operationalReportType === "monthly") {
+        report = await getMonthlySocietyReport(
+          authToken,
+          selectedTenantId,
+          selectedSocietyId,
+          operationalReportFilters.report_month
+        );
       } else {
         report = await getOutstandingSummary(
           authToken,
@@ -4638,6 +4655,14 @@ function App() {
       setError("Select a report.");
       return;
     }
+    if (selectedType.mode === "month" && exportFormat !== "xlsx") {
+      setError("Monthly society report is available as Excel only.");
+      return;
+    }
+    if (selectedType.mode === "month" && !operationalReportFilters.report_month) {
+      setError("Select a month before exporting the monthly report.");
+      return;
+    }
 
     setIsSaving(true);
     setError("");
@@ -4645,26 +4670,35 @@ function App() {
     try {
       const authToken = await refreshToken();
       const blob =
-        selectedType.mode === "period"
-          ? await exportPeriodOperationalReport(
+        selectedType.mode === "month"
+          ? await exportMonthlySocietyReport(
               authToken,
               selectedTenantId,
               selectedSocietyId,
-              operationalReportType as "billing" | "collection" | "expenses",
-              operationalReportFilters.period_start,
-              operationalReportFilters.period_end,
-              exportFormat
+              operationalReportFilters.report_month
             )
-          : await exportAsOfOperationalReport(
-              authToken,
-              selectedTenantId,
-              selectedSocietyId,
-              operationalReportType as "defaulters" | "outstanding",
-              operationalReportFilters.as_of_date,
-              exportFormat
-            );
+          : selectedType.mode === "period"
+            ? await exportPeriodOperationalReport(
+                authToken,
+                selectedTenantId,
+                selectedSocietyId,
+                operationalReportType as "billing" | "collection" | "expenses",
+                operationalReportFilters.period_start,
+                operationalReportFilters.period_end,
+                exportFormat
+              )
+            : await exportAsOfOperationalReport(
+                authToken,
+                selectedTenantId,
+                selectedSocietyId,
+                operationalReportType as "defaulters" | "outstanding",
+                operationalReportFilters.as_of_date,
+                exportFormat
+              );
       const suffix =
-        selectedType.mode === "period"
+        selectedType.mode === "month"
+          ? operationalReportFilters.report_month
+          : selectedType.mode === "period"
           ? `${operationalReportFilters.period_start}-${operationalReportFilters.period_end}`
           : operationalReportFilters.as_of_date;
       downloadBlob(blob, `${operationalReportType}-${suffix}.${exportFormat}`);
@@ -14022,6 +14056,23 @@ function App() {
                     </select>
                   </label>
                   {operationalReportTypes.find((report) => report.value === operationalReportType)?.mode ===
+                  "month" ? (
+                    <label>
+                      Month
+                      <input
+                        required
+                        type="month"
+                        value={operationalReportFilters.report_month}
+                        onChange={(event) => {
+                          setOperationalReport(null);
+                          setOperationalReportFilters({
+                            ...operationalReportFilters,
+                            report_month: event.target.value
+                          });
+                        }}
+                      />
+                    </label>
+                  ) : operationalReportTypes.find((report) => report.value === operationalReportType)?.mode ===
                   "period" ? (
                     <>
                       <label>
@@ -14086,7 +14137,7 @@ function App() {
                   <button
                     type="button"
                     className="secondary"
-                    disabled={isSaving || !operationalReport}
+                    disabled={isSaving || !operationalReport || operationalReportType === "monthly"}
                     onClick={() => void handleOperationalReportExport("pdf")}
                   >
                     PDF
@@ -14112,6 +14163,8 @@ function App() {
                             ? `${(operationalReport as ExpenseOperationalReport).expense_count} expenses`
                           : operationalReportType === "defaulters"
                             ? `${(operationalReport as DefaulterReport).defaulter_count} defaulters`
+                          : operationalReportType === "monthly"
+                            ? `${(operationalReport as MonthlySocietyReport).period_start} to ${(operationalReport as MonthlySocietyReport).period_end}`
                             : `${(operationalReport as OutstandingSummary).flats_with_outstanding} flats`
                         : "No report loaded"}
                   </span>
@@ -14142,6 +14195,14 @@ function App() {
                         <>
                           <article className="metric-tile"><span>Defaulters</span><strong>{(operationalReport as DefaulterReport).defaulter_count}</strong></article>
                           <article className="metric-tile"><span>Overdue</span><strong>{(operationalReport as DefaulterReport).total_overdue}</strong></article>
+                        </>
+                      ) : operationalReportType === "monthly" ? (
+                        <>
+                          <article className="metric-tile"><span>Opening</span><strong>{(operationalReport as MonthlySocietyReport).summary.opening_total_balance}</strong></article>
+                          <article className="metric-tile"><span>Collection</span><strong>{(operationalReport as MonthlySocietyReport).summary.total_collection}</strong></article>
+                          <article className="metric-tile"><span>Expense</span><strong>{(operationalReport as MonthlySocietyReport).summary.total_expense}</strong></article>
+                          <article className="metric-tile"><span>Closing</span><strong>{(operationalReport as MonthlySocietyReport).summary.closing_total_balance}</strong></article>
+                          <article className="metric-tile"><span>Pending Dues</span><strong>{(operationalReport as MonthlySocietyReport).summary.pending_due_amount}</strong></article>
                         </>
                       ) : (
                         <>
@@ -14180,6 +14241,42 @@ function App() {
                             <tbody>{(operationalReport as DefaulterReport).rows.map((row) => (
                               <tr key={row.flat_id}><td>{row.flat_number}</td><td>{row.building_name}</td><td>{row.invoice_count}</td><td>{row.overdue_amount}</td><td>{row.oldest_due_date ?? ""}</td><td>{row.days_overdue}</td></tr>
                             ))}</tbody>
+                          </>
+                        ) : operationalReportType === "monthly" ? (
+                          <>
+                            <thead><tr><th>Section</th><th>Bank</th><th>Cash</th><th>Total</th></tr></thead>
+                            <tbody>
+                              <tr>
+                                <td>Opening Balance</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.opening_bank_balance}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.opening_cash_balance}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.opening_total_balance}</td>
+                              </tr>
+                              <tr>
+                                <td>Collection</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.bank_collection}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.cash_collection}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.total_collection}</td>
+                              </tr>
+                              <tr>
+                                <td>Expense</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.bank_expense}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.cash_expense}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.total_expense}</td>
+                              </tr>
+                              <tr>
+                                <td>Closing Balance</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.closing_bank_balance}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.closing_cash_balance}</td>
+                                <td>{(operationalReport as MonthlySocietyReport).summary.closing_total_balance}</td>
+                              </tr>
+                              <tr>
+                                <td>Workbook Sheets</td>
+                                <td colSpan={3}>
+                                  Collections: {(operationalReport as MonthlySocietyReport).collections.length}, Expenses: {(operationalReport as MonthlySocietyReport).expenses.length}, Pending Dues: {(operationalReport as MonthlySocietyReport).pending_dues.length}
+                                </td>
+                              </tr>
+                            </tbody>
                           </>
                         ) : (
                           <>

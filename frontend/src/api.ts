@@ -1350,6 +1350,100 @@ export type DefaulterReport = {
   rows: DefaulterReportRow[];
 };
 
+export type MonthlyReportSummary = {
+  opening_bank_balance: string;
+  opening_cash_balance: string;
+  opening_total_balance: string;
+  bank_collection: string;
+  cash_collection: string;
+  total_collection: string;
+  bank_expense: string;
+  cash_expense: string;
+  total_expense: string;
+  closing_bank_balance: string;
+  closing_cash_balance: string;
+  closing_total_balance: string;
+  pending_due_amount: string;
+};
+
+export type MonthlyCollectionRow = {
+  payment_id: string;
+  payment_date: string;
+  flat_number: string;
+  building_name: string;
+  wing_name: string | null;
+  payment_mode: string;
+  account_name: string | null;
+  reference_number: string | null;
+  amount: string;
+  normal_amount: string;
+  penalty_amount: string;
+  unapplied_amount: string;
+  status: string;
+};
+
+export type MonthlyExpenseRow = {
+  expense_id: string;
+  expense_date: string;
+  due_date: string;
+  category_name: string;
+  vendor_name: string | null;
+  payment_account_name: string | null;
+  expense_type: string;
+  reference_number: string | null;
+  vendor_bill_number: string | null;
+  description: string;
+  total_amount: string;
+  amount_paid: string;
+  amount_due: string;
+  payment_status: string;
+  status: string;
+};
+
+export type MonthlyPendingDueRow = {
+  invoice_id: string;
+  invoice_number: string;
+  flat_number: string;
+  building_name: string;
+  wing_name: string | null;
+  invoice_date: string;
+  due_date: string;
+  billing_period_start: string;
+  billing_period_end: string;
+  total_amount: string;
+  amount_paid: string;
+  amount_due: string;
+  days_overdue: number;
+  status: string;
+};
+
+export type MonthlyBalanceRow = {
+  month_start: string;
+  opening_bank_balance: string;
+  opening_cash_balance: string;
+  bank_collection: string;
+  cash_collection: string;
+  bank_expense: string;
+  cash_expense: string;
+  closing_bank_balance: string;
+  closing_cash_balance: string;
+  closing_total_balance: string;
+};
+
+export type MonthlySocietyReport = {
+  tenant_id: string;
+  society_id: string;
+  report_month: string;
+  period_start: string;
+  period_end: string;
+  summary: MonthlyReportSummary;
+  collections: MonthlyCollectionRow[];
+  expenses: MonthlyExpenseRow[];
+  pending_dues: MonthlyPendingDueRow[];
+  month_on_month: MonthlyBalanceRow[];
+  balance_sheet: BalanceSheetReport;
+};
+
 export type FlatOwnership = {
   id: string;
   tenant_id: string;
@@ -3180,6 +3274,34 @@ export function exportBalanceSheetReport(
   const params = new URLSearchParams({ as_of_date: asOfDate, export_format: exportFormat });
   return tenantApiBlobRequest(
     `/societies/${societyId}/reports/balance-sheet/export?${params.toString()}`,
+    token,
+    tenantId
+  );
+}
+
+export function getMonthlySocietyReport(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  reportMonth: string
+): Promise<MonthlySocietyReport> {
+  const params = new URLSearchParams({ report_month: reportMonth });
+  return tenantApiRequest<MonthlySocietyReport>(
+    `/societies/${societyId}/reports/monthly?${params.toString()}`,
+    token,
+    tenantId
+  );
+}
+
+export function exportMonthlySocietyReport(
+  token: string,
+  tenantId: string,
+  societyId: string,
+  reportMonth: string
+): Promise<Blob> {
+  const params = new URLSearchParams({ report_month: reportMonth, export_format: "xlsx" });
+  return tenantApiBlobRequest(
+    `/societies/${societyId}/reports/monthly/export?${params.toString()}`,
     token,
     tenantId
   );

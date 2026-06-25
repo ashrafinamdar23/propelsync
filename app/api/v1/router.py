@@ -24,6 +24,7 @@ from app.api.v1.endpoints import (
     journals,
     late_fees,
     lease_agreements,
+    monthly_reports,
     outstanding,
     owners,
     operational_reports,
@@ -68,6 +69,7 @@ api_router.include_router(income_expense.router, tags=["reports"])
 api_router.include_router(journals.router, tags=["journals"])
 api_router.include_router(late_fees.router, tags=["late-fees"])
 api_router.include_router(lease_agreements.router, tags=["lease-agreements"])
+api_router.include_router(monthly_reports.router, tags=["reports"])
 api_router.include_router(outstanding.router, tags=["outstanding"])
 api_router.include_router(operational_reports.router, tags=["reports"])
 api_router.include_router(other_income.router, tags=["other-income"])

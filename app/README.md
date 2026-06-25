@@ -763,12 +763,21 @@ GET /api/v1/societies/{society_id}/reports/defaulters?as_of_date=YYYY-MM-DD
 GET /api/v1/societies/{society_id}/reports/defaulters/export?as_of_date=YYYY-MM-DD&export_format=pdf
 GET /api/v1/societies/{society_id}/reports/outstanding?as_of_date=YYYY-MM-DD
 GET /api/v1/societies/{society_id}/reports/outstanding/export?as_of_date=YYYY-MM-DD&export_format=xlsx
+GET /api/v1/societies/{society_id}/reports/monthly?report_month=YYYY-MM
+GET /api/v1/societies/{society_id}/reports/monthly/export?report_month=YYYY-MM&export_format=xlsx
 ```
 
 Operational reports are backend-generated and support XLSX/PDF exports. Billing excludes cancelled
 invoices. Collection excludes reversed payments. Expense excludes cancelled expenses. Defaulter and
 outstanding reports use the centralized outstanding calculation service so ageing and overdue totals
 stay consistent across dashboard/report surfaces.
+
+The monthly society report is a multi-sheet XLSX workbook for treasurer month-end reporting. It
+accepts `report_month=YYYY-MM`; past months run from the first to the last day of the month, while
+the current month runs from the first day through today. The workbook includes account summary,
+collection, expense, month-on-month balance, balance sheet snapshot, and pending dues sheets. The
+cash/bank split currently classifies asset accounts by account name/code containing `cash` or `bank`;
+future account subtype configuration can replace this without changing the report API.
 
 ## Account Transfer APIs
 
